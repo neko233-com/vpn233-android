@@ -22,6 +22,8 @@ import com.neko233.vpn233.data.RoutingMode
 import com.neko233.vpn233.data.RuleItem
 import com.neko233.vpn233.data.RulePosition
 import com.neko233.vpn233.data.VpnStatus
+import com.neko233.vpn233.service.CoreSwitchLock
+import com.neko233.vpn233.service.RoutingModeCoordinator
 import com.neko233.vpn233.service.Vpn233Service
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
@@ -29,17 +31,20 @@ import java.net.Proxy
 import java.net.URL
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
 class MainViewModel(private val app: Application) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val vpnApp = app as Vpn233Application
+    private val nodeSelectionJobs = mutableMapOf<String, Job>()
 
     val settings: StateFlow<AppSettings> = vpnApp.settingsStore.settings
     val profiles: StateFlow<List<ProfileItem>> = vpnApp.profileRepository.profiles
@@ -111,19 +116,29 @@ class MainViewModel(private val app: Application) {
         vpnApp.settingsStore.update { it.copy(routingMode = mode) }
         if (vpnStatus.value == VpnStatus.RUNNING) {
             scope.launch(Dispatchers.IO) {
-                MihomoBridge.setMode(mode.coreValue)
-                Vpn233Service.refreshCurrentNodeName()
-                Vpn233Service.refreshNotification(app)
-                refreshGroups()
-                refreshConnections()
+                CoreSwitchLock.mutex.withLock {
+                    val runningId = Vpn233Service.runningProfileId.value
+                    if (vpnStatus.value == VpnStatus.RUNNING &&
+                        runningId != null && runningId == activeProfileId.value) {
+                        RoutingModeCoordinator.apply(vpnApp, runningId, settings.value.routingMode)
+                        Vpn233Service.refreshCurrentNodeName()
+                        Vpn233Service.refreshNotification(app)
+                        refreshGroups()
+                        refreshConnections()
+                    } else if (Vpn233Service.isActiveOrStarting()) {
+                        Vpn233Service.reload(app)
+                    }
+                }
             }
+        } else if (vpnStatus.value == VpnStatus.STARTING) {
+            Vpn233Service.reload(app)
         }
     }
 
     fun updateSettings(reloadIfRunning: Boolean = false, transform: (AppSettings) -> AppSettings) {
         val updated = vpnApp.settingsStore.update(transform)
         MihomoBridge.setLogLevel(updated.logLevel)
-        if (reloadIfRunning && vpnStatus.value == VpnStatus.RUNNING) {
+        if (reloadIfRunning && Vpn233Service.isActiveOrStarting()) {
             Vpn233Service.reload(app)
         }
     }
@@ -142,19 +157,27 @@ class MainViewModel(private val app: Application) {
     }
 
     fun selectProxy(groupName: String, nodeName: String) {
-        scope.launch(Dispatchers.IO) {
-            val prev = _groups.value.firstOrNull { it.name == groupName }?.now
-            val ok = MihomoBridge.selectProxy(groupName, nodeName)
-            if (ok) {
-                activeProfileId.value?.let { pid ->
-                    vpnApp.settingsStore.setSelectedNode(pid, groupName, nodeName)
+        val profileId = activeProfileId.value ?: return
+        nodeSelectionJobs[groupName]?.cancel()
+        nodeSelectionJobs[groupName] = scope.launch(Dispatchers.IO) {
+            CoreSwitchLock.mutex.withLock {
+                if (vpnStatus.value != VpnStatus.RUNNING || activeProfileId.value != profileId ||
+                    Vpn233Service.runningProfileId.value != profileId) {
+                    _toastMessage.value = "配置正在切换，请稍后重试"
+                    return@withLock
                 }
-                Vpn233Service.refreshCurrentNodeName()
-                Vpn233Service.refreshNotification(app)
-                refreshGroups()
-                refreshConnections()
-                if (prev != null && prev != nodeName) {
-                    _toastMessage.value = "已切换至 $nodeName，旧连接已断开"
+                val prev = _groups.value.firstOrNull { it.name == groupName }?.now
+                if (MihomoBridge.selectProxy(groupName, nodeName)) {
+                    vpnApp.settingsStore.setSelectedNode(profileId, groupName, nodeName)
+                    Vpn233Service.refreshCurrentNodeName()
+                    Vpn233Service.refreshNotification(app)
+                    refreshGroups()
+                    refreshConnections()
+                    if (prev != null && prev != nodeName) {
+                        _toastMessage.value = "已切换至 $nodeName，旧连接已断开"
+                    }
+                } else {
+                    _toastMessage.value = "节点切换失败，请检查策略组和节点"
                 }
             }
         }
@@ -348,7 +371,7 @@ class MainViewModel(private val app: Application) {
             if (name.isNotBlank()) _toastMessage.value = "当前已启用「$name」"
             return
         }
-        if (vpnStatus.value == VpnStatus.RUNNING) {
+        if (Vpn233Service.isActiveOrStarting()) {
             MihomoBridge.closeAllConnections()
             Vpn233Service.reload(app)
             _connections.value = emptyList()
@@ -360,7 +383,7 @@ class MainViewModel(private val app: Application) {
         scope.launch(Dispatchers.IO) {
             val (count, activeChanged) = vpnApp.profileRepository.checkDueAutoUpdates(runningMixedPort())
             if (count > 0) {
-                if (activeChanged && vpnStatus.value == VpnStatus.RUNNING) {
+                if (activeChanged && Vpn233Service.isActiveOrStarting()) {
                     MihomoBridge.closeAllConnections()
                     Vpn233Service.reload(app)
                 }
@@ -379,7 +402,7 @@ class MainViewModel(private val app: Application) {
                     vpnApp.settingsStore.toOverrideJson(settings.value, m)
                 }
                 res.onSuccess { item ->
-                    if (activeProfileId.value == item.id && vpnStatus.value == VpnStatus.RUNNING) {
+                    if (activeProfileId.value == item.id && Vpn233Service.isActiveOrStarting()) {
                         MihomoBridge.closeAllConnections()
                         Vpn233Service.reload(app)
                     }
@@ -436,7 +459,7 @@ class MainViewModel(private val app: Application) {
                     val item = saveRes.item
                     vpnApp.profileRepository.setActiveProfile(item.id)
                     val needReload = prevActiveId != item.id || saveRes.contentChanged
-                    if (vpnStatus.value == VpnStatus.RUNNING && needReload) {
+                    if (Vpn233Service.isActiveOrStarting() && needReload) {
                         MihomoBridge.closeAllConnections()
                         Vpn233Service.reload(app)
                     }
@@ -461,7 +484,7 @@ class MainViewModel(private val app: Application) {
             try {
                 val res = vpnApp.profileRepository.importFromUrlWithResult(item.url, item.name, item.id, runningMixedPort())
                 res.onSuccess { saveRes ->
-                    if (activeProfileId.value == item.id && vpnStatus.value == VpnStatus.RUNNING && saveRes.contentChanged) {
+                    if (activeProfileId.value == item.id && Vpn233Service.isActiveOrStarting() && saveRes.contentChanged) {
                         MihomoBridge.closeAllConnections()
                         Vpn233Service.reload(app)
                     }
@@ -482,16 +505,15 @@ class MainViewModel(private val app: Application) {
             _busyMessage.value = "正在更新全部 ${urlProfiles.size} 个订阅..."
             var okCount = 0
             var activeChanged = false
-            val curActive = activeProfileId.value
             try {
                 for (item in urlProfiles) {
                     val res = vpnApp.profileRepository.importFromUrlWithResult(item.url, item.name, item.id, runningMixedPort())
                     res.onSuccess { saveRes ->
                         okCount++
-                        if (item.id == curActive && saveRes.contentChanged) activeChanged = true
+                        if (item.id == activeProfileId.value && saveRes.contentChanged) activeChanged = true
                     }
                 }
-                if (vpnStatus.value == VpnStatus.RUNNING && activeChanged) {
+                if (Vpn233Service.isActiveOrStarting() && activeChanged) {
                     MihomoBridge.closeAllConnections()
                     Vpn233Service.reload(app)
                 }
@@ -514,7 +536,7 @@ class MainViewModel(private val app: Application) {
                         vpnApp.profileRepository.setActiveProfile(item.id)
                     }
                     val needReload = (id == null && prevActiveId != item.id) || saveRes.contentChanged
-                    if (activeProfileId.value == item.id && vpnStatus.value == VpnStatus.RUNNING && needReload) {
+                    if (activeProfileId.value == item.id && Vpn233Service.isActiveOrStarting() && needReload) {
                         MihomoBridge.closeAllConnections()
                         Vpn233Service.reload(app)
                     }
@@ -544,7 +566,7 @@ class MainViewModel(private val app: Application) {
                         vpnApp.profileRepository.setActiveProfile(first.item.id)
                     }
                     val changed = first != null && (prevActiveId != first.item.id || first.contentChanged)
-                    if (vpnStatus.value == VpnStatus.RUNNING && changed) {
+                    if (Vpn233Service.isActiveOrStarting() && changed) {
                         MihomoBridge.closeAllConnections()
                         Vpn233Service.reload(app)
                     }
@@ -569,9 +591,15 @@ class MainViewModel(private val app: Application) {
     }
 
     fun deleteProfile(id: String) {
+        val wasActive = activeProfileId.value == id
         vpnApp.profileRepository.deleteProfile(id)
-        if (vpnStatus.value == VpnStatus.RUNNING && activeProfileId.value == null) {
-            Vpn233Service.stop(app)
+        if (wasActive && Vpn233Service.isActiveOrStarting()) {
+            if (activeProfileId.value == null) {
+                Vpn233Service.stop(app)
+            } else {
+                MihomoBridge.closeAllConnections()
+                Vpn233Service.reload(app)
+            }
         }
     }
 
@@ -597,15 +625,21 @@ class MainViewModel(private val app: Application) {
 
     fun exportAllBackup() {
         scope.launch(Dispatchers.IO) {
-            val file = vpnApp.profileRepository.exportAllBackupZip()
-            val uri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", file)
-            withContext(Dispatchers.Main) {
-                val send = Intent(Intent.ACTION_SEND).apply {
-                    type = "application/zip"
-                    putExtra(Intent.EXTRA_STREAM, uri)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                val file = vpnApp.profileRepository.exportAllBackupZip()
+                val uri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", file)
+                withContext(Dispatchers.Main) {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "application/zip"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    app.startActivity(Intent.createChooser(send, "导出 vpn233 备份").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
-                app.startActivity(Intent.createChooser(send, "导出 vpn233 备份").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _toastMessage.value = e.message ?: "备份导出失败"
             }
         }
     }

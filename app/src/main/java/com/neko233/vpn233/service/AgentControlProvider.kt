@@ -24,6 +24,7 @@ import com.neko233.vpn233.data.TunStackMode
 import com.neko233.vpn233.data.VpnStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -55,26 +56,37 @@ class AgentControlProvider : ContentProvider() {
                 "stop" -> {
                     Vpn233Service.stop(ctx)
                     waitUntilSettled(timeoutMs = 3000L)
+                    check(Vpn233Service.status.value == VpnStatus.STOPPED) { "VPN stop did not complete" }
                     okBundle(JSONObject().put("status", Vpn233Service.status.value.name))
                 }
                 "reload" -> {
-                    if (Vpn233Service.status.value != VpnStatus.RUNNING) {
+                    if (!Vpn233Service.isActiveOrStarting()) {
                         errBundle("VPN_NOT_RUNNING")
                     } else {
                         MihomoBridge.closeAllConnections()
                         Vpn233Service.reload(ctx)
-                        waitUntilSettled(timeoutMs = 4000L)
+                        requireRunning(timeoutMs = 10000L)
                         okBundle(JSONObject().put("reloaded", true).put("vpnStatus", Vpn233Service.status.value.name))
                     }
                 }
                 "set_mode" -> {
-                    val m = RoutingMode.fromCore(arg.orEmpty())
+                    val m = RoutingMode.entries.firstOrNull { it.coreValue.equals(arg.orEmpty(), true) }
+                        ?: return errBundle("Invalid routing mode")
                     app.settingsStore.update { it.copy(routingMode = m) }
-                    if (Vpn233Service.status.value == VpnStatus.RUNNING) {
-                        MihomoBridge.setMode(m.coreValue)
-                        Vpn233Service.refreshCurrentNodeName()
-                        Vpn233Service.refreshNotification(ctx)
+                    runBlocking(Dispatchers.IO) {
+                        CoreSwitchLock.mutex.withLock {
+                            if (Vpn233Service.status.value == VpnStatus.RUNNING &&
+                                Vpn233Service.runningProfileId.value == app.profileRepository.activeProfileId.value) {
+                                val profileId = app.profileRepository.activeProfileId.value
+                                if (profileId != null) RoutingModeCoordinator.apply(app, profileId, app.settingsStore.settings.value.routingMode)
+                                Vpn233Service.refreshCurrentNodeName()
+                                Vpn233Service.refreshNotification(ctx)
+                            } else if (Vpn233Service.isActiveOrStarting()) {
+                                Vpn233Service.reload(ctx)
+                            }
+                        }
                     }
+                    if (Vpn233Service.isActiveOrStarting()) requireRunning(timeoutMs = 10000L)
                     okBundle(JSONObject().put("mode", m.coreValue))
                 }
                 "list_profiles" -> handleListProfiles(app)
@@ -247,6 +259,16 @@ class AgentControlProvider : ContentProvider() {
         }
     }
 
+    private fun requireRunning(timeoutMs: Long, expectedProfileId: String? = null) {
+        waitUntilSettled(timeoutMs)
+        check(Vpn233Service.status.value == VpnStatus.RUNNING) {
+            Vpn233Service.lastError.value ?: "VPN transition did not complete: ${Vpn233Service.status.value}"
+        }
+        check(expectedProfileId == null || Vpn233Service.runningProfileId.value == expectedProfileId) {
+            "Profile switch was superseded by another request"
+        }
+    }
+
     private fun handleStart(app: Vpn233Application): Bundle {
         if (Vpn233Service.status.value == VpnStatus.RUNNING) {
             return handleStatus(app)
@@ -260,11 +282,7 @@ class AgentControlProvider : ContentProvider() {
         }
         Vpn233Service.clearError()
         Vpn233Service.start(app)
-        waitUntilSettled(timeoutMs = 4500L)
-        val err = Vpn233Service.lastError.value
-        if (!err.isNullOrBlank() && Vpn233Service.status.value != VpnStatus.RUNNING) {
-            return errBundle(err)
-        }
+        requireRunning(timeoutMs = 10000L, expectedProfileId = app.profileRepository.activeProfileId.value)
         return handleStatus(app)
     }
 
@@ -307,10 +325,10 @@ class AgentControlProvider : ContentProvider() {
         val item = saveRes.item
         app.profileRepository.setActiveProfile(item.id)
         val needReload = prevActive != item.id || saveRes.contentChanged
-        if (Vpn233Service.status.value == VpnStatus.RUNNING && needReload) {
+        if (Vpn233Service.isActiveOrStarting() && needReload) {
             MihomoBridge.closeAllConnections()
             Vpn233Service.reload(app)
-            waitUntilSettled(timeoutMs = 3500L)
+            requireRunning(timeoutMs = 10000L, expectedProfileId = item.id)
         }
         return okBundle(JSONObject().apply {
             put("id", item.id)
@@ -368,10 +386,10 @@ class AgentControlProvider : ContentProvider() {
         }
         app.profileRepository.setActiveProfile(item.id)
         val needReload = prevActive != item.id || saveRes.contentChanged
-        if (Vpn233Service.status.value == VpnStatus.RUNNING && needReload) {
+        if (Vpn233Service.isActiveOrStarting() && needReload) {
             MihomoBridge.closeAllConnections()
             Vpn233Service.reload(app)
-            waitUntilSettled(timeoutMs = 3500L)
+            requireRunning(timeoutMs = 10000L, expectedProfileId = item.id)
         }
         return okBundle(JSONObject().apply {
             put("id", item.id)
@@ -387,11 +405,13 @@ class AgentControlProvider : ContentProvider() {
             ?: return errBundle("Profile not found: $idOrName")
         val changed = app.profileRepository.setActiveProfile(item.id)
         var closedConnections = false
-        if (Vpn233Service.status.value == VpnStatus.RUNNING && (changed || force)) {
+        if (Vpn233Service.isActiveOrStarting() && (changed || force)) {
             MihomoBridge.closeAllConnections()
             closedConnections = true
             Vpn233Service.reload(app)
-            waitUntilSettled(timeoutMs = 4000L)
+            requireRunning(timeoutMs = 10000L, expectedProfileId = item.id)
+        } else if (Vpn233Service.status.value == VpnStatus.STARTING) {
+            requireRunning(timeoutMs = 10000L, expectedProfileId = item.id)
         }
         return okBundle(JSONObject().apply {
             put("id", item.id)
@@ -421,12 +441,11 @@ class AgentControlProvider : ContentProvider() {
         }
         val updatedArr = JSONArray()
         var activeChanged = false
-        val activeId = app.profileRepository.activeProfileId.value
         val port = runningProxyPort(app)
         runBlocking(Dispatchers.IO) {
             targets.forEach { p ->
                 val saveRes = app.profileRepository.importFromUrlWithResult(p.url, p.name, p.id, port).getOrThrow()
-                if (p.id == activeId && saveRes.contentChanged) activeChanged = true
+                if (p.id == app.profileRepository.activeProfileId.value && saveRes.contentChanged) activeChanged = true
                 updatedArr.put(JSONObject().apply {
                     put("id", saveRes.item.id)
                     put("name", saveRes.item.name)
@@ -434,10 +453,10 @@ class AgentControlProvider : ContentProvider() {
                 })
             }
         }
-        if (activeChanged && Vpn233Service.status.value == VpnStatus.RUNNING) {
+        if (activeChanged && Vpn233Service.isActiveOrStarting()) {
             MihomoBridge.closeAllConnections()
             Vpn233Service.reload(app)
-            waitUntilSettled(timeoutMs = 3500L)
+            requireRunning(timeoutMs = 10000L)
         }
         return okBundle(JSONObject().put("updated", updatedArr))
     }
@@ -465,10 +484,10 @@ class AgentControlProvider : ContentProvider() {
         val saved = app.profileRepository.saveMergeYaml(item.id, content) { m ->
             app.settingsStore.toOverrideJson(app.settingsStore.settings.value, m)
         }.getOrThrow()
-        if (app.profileRepository.activeProfileId.value == saved.id && Vpn233Service.status.value == VpnStatus.RUNNING) {
+        if (app.profileRepository.activeProfileId.value == saved.id && Vpn233Service.isActiveOrStarting()) {
             MihomoBridge.closeAllConnections()
             Vpn233Service.reload(app)
-            waitUntilSettled(timeoutMs = 3500L)
+            requireRunning(timeoutMs = 10000L, expectedProfileId = saved.id)
         }
         return okBundle(JSONObject().put("id", saved.id).put("name", saved.name).put("hasMergeYaml", saved.hasMergeYaml))
     }
@@ -481,10 +500,10 @@ class AgentControlProvider : ContentProvider() {
             app.settingsStore.toOverrideJson(s, activeMerge)
         }.getOrThrow()
         app.settingsStore.update { it.copy(globalMergeYaml = trimmed) }
-        if (Vpn233Service.status.value == VpnStatus.RUNNING) {
+        if (Vpn233Service.isActiveOrStarting()) {
             MihomoBridge.closeAllConnections()
             Vpn233Service.reload(app)
-            waitUntilSettled(timeoutMs = 3500L)
+            requireRunning(timeoutMs = 10000L)
         }
         return okBundle(JSONObject().put("hasGlobalMerge", trimmed.isNotEmpty()).put("length", trimmed.length))
     }
@@ -514,9 +533,16 @@ class AgentControlProvider : ContentProvider() {
     private fun handleDeleteProfile(app: Vpn233Application, idOrName: String): Bundle {
         val item = app.profileRepository.findByIdOrName(idOrName)
             ?: return errBundle("Profile not found: $idOrName")
+        val wasActive = app.profileRepository.activeProfileId.value == item.id
         app.profileRepository.deleteProfile(item.id)
-        if (Vpn233Service.status.value == VpnStatus.RUNNING && app.profileRepository.activeProfileId.value == null) {
-            Vpn233Service.stop(app)
+        if (wasActive && Vpn233Service.isActiveOrStarting()) {
+            val activeId = app.profileRepository.activeProfileId.value
+            if (activeId == null) {
+                Vpn233Service.stop(app)
+            } else {
+                Vpn233Service.reload(app)
+                requireRunning(timeoutMs = 10000L, expectedProfileId = activeId)
+            }
         }
         return okBundle(JSONObject().put("deleted", item.id))
     }
@@ -558,20 +584,26 @@ class AgentControlProvider : ContentProvider() {
         if (group.isEmpty() || proxy.isEmpty()) {
             return errBundle("Provide group and proxy via --arg GROUP --extra proxy:s:NODE or --arg GROUP,NODE")
         }
-        val prev = MihomoBridge.queryGroups(app.settingsStore.settings.value.delayTestUrl).second
-            .firstOrNull { it.name == group }?.now.orEmpty()
-        val ok = MihomoBridge.selectProxy(group, proxy)
-        if (!ok) return errBundle("Failed to select $proxy in $group")
-        app.profileRepository.activeProfileId.value?.let { pid ->
-            app.settingsStore.setSelectedNode(pid, group, proxy)
+        val profileId = app.profileRepository.activeProfileId.value ?: return errBundle("NO_ACTIVE_PROFILE")
+        val previous = runBlocking(Dispatchers.IO) {
+            CoreSwitchLock.mutex.withLock {
+                check(Vpn233Service.status.value == VpnStatus.RUNNING &&
+                    Vpn233Service.runningProfileId.value == profileId &&
+                    app.profileRepository.activeProfileId.value == profileId) { "PROFILE_SWITCH_IN_PROGRESS" }
+                val prev = MihomoBridge.queryGroups(app.settingsStore.settings.value.delayTestUrl).second
+                    .firstOrNull { it.name == group }?.now.orEmpty()
+                check(MihomoBridge.selectProxy(group, proxy)) { "Failed to select $proxy in $group" }
+                app.settingsStore.setSelectedNode(profileId, group, proxy)
+                Vpn233Service.refreshCurrentNodeName()
+                Vpn233Service.refreshNotification(app)
+                prev
+            }
         }
-        Vpn233Service.refreshCurrentNodeName()
-        Vpn233Service.refreshNotification(app)
         return okBundle(JSONObject().apply {
             put("group", group)
-            put("previous", prev)
+            put("previous", previous)
             put("selected", proxy)
-            put("closedConnections", prev != proxy)
+            put("closedConnections", previous != proxy)
         })
     }
 

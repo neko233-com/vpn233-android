@@ -105,13 +105,13 @@ type mockTracker struct {
 	closed bool
 }
 
-func (m *mockTracker) ID() string                     { return m.info.UUID.String() }
-func (m *mockTracker) Info() *statistic.TrackerInfo   { return m.info }
-func (m *mockTracker) Close() error                   { m.closed = true; statistic.DefaultManager.Leave(m); return nil }
-func (m *mockTracker) Chains() C2.Chain               { return m.info.Chain }
-func (m *mockTracker) ProviderChains() C2.Chain       { return nil }
+func (m *mockTracker) ID() string                       { return m.info.UUID.String() }
+func (m *mockTracker) Info() *statistic.TrackerInfo     { return m.info }
+func (m *mockTracker) Close() error                     { m.closed = true; statistic.DefaultManager.Leave(m); return nil }
+func (m *mockTracker) Chains() C2.Chain                 { return m.info.Chain }
+func (m *mockTracker) ProviderChains() C2.Chain         { return nil }
 func (m *mockTracker) AppendToChains(_ C2.ProxyAdapter) {}
-func (m *mockTracker) RemoteDestination() string      { return "" }
+func (m *mockTracker) RemoteDestination() string        { return "" }
 
 func registerMockTracker(t *testing.T, chain []string) *mockTracker {
 	t.Helper()
@@ -207,6 +207,49 @@ rules:
 	applyConfigAndCloseConnections(cfg2)
 	if !trReload.closed {
 		t.Fatalf("expected connection closed on config hot-reload")
+	}
+
+	// Invalid selections must leave the working node and its connections intact.
+	trInvalid := registerMockTracker(t, []string{"Korea-01", "PROXY"})
+	if selectProxyAndCloseConnections("PROXY", "missing-node") || trInvalid.closed {
+		t.Fatalf("invalid node selection must fail without closing connections")
+	}
+	setModeAndCloseConnections("rule")
+	if trInvalid.closed {
+		t.Fatalf("reselecting the current routing mode must not close connections")
+	}
+	setModeAndCloseConnections("direct")
+	if !trInvalid.closed {
+		t.Fatalf("switching rule -> direct must close existing connections")
+	}
+
+	// A different subscription must replace the live group membership, and switching
+	// back must make the original nodes selectable again.
+	secondDir := t.TempDir()
+	secondYaml := strings.ReplaceAll(yamlContent, "Korea-01", "Second-01")
+	secondYaml = strings.ReplaceAll(secondYaml, "USA-01", "Second-02")
+	if err := os.WriteFile(filepath.Join(secondDir, "config.yaml"), []byte(secondYaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secondRaw, err := resolveAndPatchConfig(secondDir, `{"mode":"rule"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondCfg, err := config.ParseRawConfig(secondRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trBeforeSwitch := registerMockTracker(t, []string{"DIRECT"})
+	applyConfigAndCloseConnections(secondCfg)
+	if !trBeforeSwitch.closed || !selectProxyAndCloseConnections("PROXY", "Second-02") {
+		t.Fatal("second subscription did not replace the active configuration")
+	}
+	if selectProxyAndCloseConnections("PROXY", "USA-01") {
+		t.Fatal("old subscription node remained selectable after the switch")
+	}
+	applyConfigAndCloseConnections(cfg2)
+	if !selectProxyAndCloseConnections("PROXY", "USA-01") {
+		t.Fatal("original subscription node was not restored")
 	}
 }
 

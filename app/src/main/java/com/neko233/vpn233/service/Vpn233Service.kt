@@ -40,15 +40,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.File
 import java.util.TimeZone
 
 class Vpn233Service : VpnService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val lifecycleMutex = Mutex()
-    @Volatile
-    private var pendingReload = false
+    private val lifecycleRequests = LifecycleRequests()
     private var tunPfd: ParcelFileDescriptor? = null
     private var monitorJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -92,6 +90,7 @@ class Vpn233Service : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        currentService = this
         createNotificationChannel()
         MihomoBridge.socketProtector = { fd -> protect(fd) }
         val pm = getSystemService(PowerManager::class.java)
@@ -103,12 +102,11 @@ class Vpn233Service : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                pendingReload = false
-                serviceScope.launch { stopVpnInternal() }
+                enqueueLifecycle(LifecycleRequests.Command.STOP)
                 return START_NOT_STICKY
             }
             ACTION_RELOAD -> {
-                triggerStartOrReload()
+                enqueueLifecycle(LifecycleRequests.Command.RELOAD)
                 return START_STICKY
             }
             ACTION_REFRESH_MONITOR -> {
@@ -120,23 +118,29 @@ class Vpn233Service : VpnService() {
             }
             else -> {
                 postForegroundNotification("vpn233 正在启动...", "准备核心配置")
-                triggerStartOrReload()
+                enqueueLifecycle(LifecycleRequests.Command.START)
                 return START_STICKY
             }
         }
     }
 
     private fun triggerStartOrReload() {
-        if (lifecycleMutex.isLocked) {
-            pendingReload = true
-            return
-        }
+        enqueueLifecycle(LifecycleRequests.Command.RELOAD)
+    }
+
+    private fun enqueueLifecycle(command: LifecycleRequests.Command) {
+        if (!lifecycleRequests.request(command) {
+                _status.value = if (command == LifecycleRequests.Command.STOP) VpnStatus.STOPPING else VpnStatus.STARTING
+            }) return
         serviceScope.launch {
-            lifecycleMutex.withLock {
-                do {
-                    pendingReload = false
-                    startOrReloadVpnLocked()
-                } while (pendingReload)
+            while (true) {
+                val work = lifecycleRequests.next() ?: break
+                CoreSwitchLock.mutex.withLock {
+                    when (work) {
+                        LifecycleRequests.Work.LOAD -> startOrReloadVpnLocked()
+                        LifecycleRequests.Work.STOP -> stopVpnLocked()
+                    }
+                }
             }
         }
     }
@@ -157,12 +161,17 @@ class Vpn233Service : VpnService() {
         val app = Vpn233Application.instance
         val settings = app.settingsStore.settings.value
         val activeProfile = app.profileRepository.getActiveProfile()
-        val profileDir = app.profileRepository.getActiveProfileDir()
+        val profileDir = activeProfile?.let { app.profileRepository.getProfileDir(it.id) }
+            ?.takeIf { File(it, "config.yaml").isFile }
         if (activeProfile == null || profileDir == null) {
             _lastError.value = "请先导入并选择一个配置"
-            _status.value = VpnStatus.STOPPED
-            stopForegroundCompat()
-            stopSelf()
+            if (lifecycleRequests.hasPendingStart()) {
+                _status.value = VpnStatus.STARTING
+            } else {
+                _status.value = VpnStatus.STOPPED
+                stopForegroundCompat()
+                stopSelf()
+            }
             return
         }
 
@@ -172,7 +181,6 @@ class Vpn233Service : VpnService() {
 
             // Tear down all prior connections before swapping profiles or node/TUN settings
             runCatching { MihomoBridge.closeAllConnections() }
-            closeTunOnly()
             MihomoBridge.stopMixed()
 
             val mergeYaml = app.profileRepository.readMergeYaml(activeProfile.id)
@@ -186,7 +194,7 @@ class Vpn233Service : VpnService() {
             savedSelections.forEach { (group, node) ->
                 MihomoBridge.selectProxy(group, node)
             }
-            MihomoBridge.setMode(settings.routingMode.coreValue)
+            RoutingModeCoordinator.apply(app, activeProfile.id, settings.routingMode)
 
             var mixedBound = ""
             if (settings.systemProxy || settings.allowLan || settings.mixedPort > 0) {
@@ -263,6 +271,8 @@ class Vpn233Service : VpnService() {
 
             builder.setConfigureIntent(mainActivityPendingIntent())
 
+            // Keep the previous TUN alive until Android has installed its replacement.
+            // startTun closes the previous native listener when it takes ownership of the new fd.
             val pfd = builder.establish() ?: throw IllegalStateException("系统未授予 VPN 权限或创建隧道失败")
             tunPfd = pfd
             val detachedFd = pfd.detachFd()
@@ -281,8 +291,11 @@ class Vpn233Service : VpnService() {
 
             registerPhysicalNetworkDnsCallback()
             _activeProfileName.value = activeProfile.name
+            _runningProfileId.value = activeProfile.id
             refreshCurrentNodeName()
-            _status.value = VpnStatus.RUNNING
+            // The check and status transition share the request lock so a rapid switch cannot
+            // briefly report an obsolete configuration as the completed request.
+            if (!lifecycleRequests.finishLoad { _status.value = VpnStatus.RUNNING }) return
             pushStaticOrRateNotification(TrafficStats(), force = true)
             requestTileUpdate()
             ensureMonitorLoop()
@@ -341,13 +354,6 @@ class Vpn233Service : VpnService() {
         }
     }
 
-    private suspend fun stopVpnInternal() {
-        lifecycleMutex.withLock {
-            pendingReload = false
-            stopVpnLocked()
-        }
-    }
-
     private fun stopVpnLocked() {
         _status.value = VpnStatus.STOPPING
         stopMonitorLoop()
@@ -357,11 +363,16 @@ class Vpn233Service : VpnService() {
         _traffic.value = TrafficStats()
         _speedHistory.value = emptyList()
         _currentNodeName.value = ""
+        _activeProfileName.value = ""
+        _runningProfileId.value = null
         lastNotifiedText = ""
-        _status.value = VpnStatus.STOPPED
+        val restartPending = lifecycleRequests.hasPendingStart()
+        _status.value = if (restartPending) VpnStatus.STARTING else VpnStatus.STOPPED
         requestTileUpdate()
-        stopForegroundCompat()
-        stopSelf()
+        if (!restartPending) {
+            stopForegroundCompat()
+            stopSelf()
+        }
     }
 
     private fun closeTunOnly() {
@@ -457,8 +468,7 @@ class Vpn233Service : VpnService() {
     }
 
     override fun onRevoke() {
-        pendingReload = false
-        serviceScope.launch { stopVpnInternal() }
+        enqueueLifecycle(LifecycleRequests.Command.STOP)
         super.onRevoke()
     }
 
@@ -470,6 +480,7 @@ class Vpn233Service : VpnService() {
     }
 
     override fun onDestroy() {
+        if (currentService === this) currentService = null
         MihomoBridge.socketProtector = null
         if (receiversRegistered) {
             runCatching { unregisterReceiver(systemEventReceiver) }
@@ -479,6 +490,7 @@ class Vpn233Service : VpnService() {
         unregisterPhysicalNetworkDnsCallback()
         closeTunOnly()
         runCatching { MihomoBridge.reset() }
+        _runningProfileId.value = null
         _status.value = VpnStatus.STOPPED
         requestTileUpdate()
         serviceScope.cancel()
@@ -557,6 +569,8 @@ class Vpn233Service : VpnService() {
     }
 
     companion object {
+        @Volatile
+        private var currentService: Vpn233Service? = null
         const val ACTION_START = "com.neko233.vpn233.action.START"
         const val ACTION_STOP = "com.neko233.vpn233.action.STOP"
         const val ACTION_RELOAD = "com.neko233.vpn233.action.RELOAD"
@@ -588,6 +602,9 @@ class Vpn233Service : VpnService() {
 
         private val _activeProfileName = MutableStateFlow("")
         val activeProfileName: StateFlow<String> = _activeProfileName.asStateFlow()
+
+        private val _runningProfileId = MutableStateFlow<String?>(null)
+        val runningProfileId: StateFlow<String?> = _runningProfileId.asStateFlow()
 
         private val _lastError = MutableStateFlow<String?>(null)
         val lastError: StateFlow<String?> = _lastError.asStateFlow()
@@ -622,20 +639,53 @@ class Vpn233Service : VpnService() {
 
         fun start(context: Context) {
             val intent = Intent(context, Vpn233Service::class.java).setAction(ACTION_START)
-            context.startForegroundService(intent)
+            val previous = _status.value
+            _status.value = VpnStatus.STARTING
+            try {
+                context.startForegroundService(intent)
+            } catch (e: Exception) {
+                _status.value = previous
+                throw e
+            }
         }
 
         fun stop(context: Context) {
+            val service = currentService
+            if (service != null) {
+                service.enqueueLifecycle(LifecycleRequests.Command.STOP)
+                return
+            }
             val intent = Intent(context, Vpn233Service::class.java).setAction(ACTION_STOP)
-            context.startService(intent)
+            val previous = _status.value
+            _status.value = VpnStatus.STOPPING
+            try {
+                context.startService(intent)
+            } catch (e: Exception) {
+                _status.value = previous
+                throw e
+            }
         }
 
         fun reload(context: Context) {
-            if (_status.value == VpnStatus.RUNNING) {
+            if (isActiveOrStarting()) {
+                val service = currentService
+                if (service != null && service.lifecycleRequests.wantsRunning()) {
+                    service.enqueueLifecycle(LifecycleRequests.Command.RELOAD)
+                    return
+                }
                 val intent = Intent(context, Vpn233Service::class.java).setAction(ACTION_RELOAD)
-                context.startService(intent)
+                val previous = _status.value
+                _status.value = VpnStatus.STARTING
+                try {
+                    context.startService(intent)
+                } catch (e: Exception) {
+                    _status.value = previous
+                    throw e
+                }
             }
         }
+
+        fun isActiveOrStarting(): Boolean = _status.value == VpnStatus.RUNNING || _status.value == VpnStatus.STARTING
 
         fun formatRate(bytesPerSec: Long): String = "${formatBytes(bytesPerSec)}/s"
 

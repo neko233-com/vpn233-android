@@ -2,6 +2,7 @@ package com.neko233.vpn233
 
 import com.neko233.vpn233.data.SubscriptionParser
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Test
 import java.util.Base64
 
@@ -71,5 +72,28 @@ class SubscriptionParserTest {
         assertTrue(yaml.contains("type: vless"))
         assertTrue(yaml.contains("type: trojan"))
         assertTrue(yaml.contains("type: hysteria2"))
+    }
+
+    @Test
+    fun renamedNodesMatchGroupReferencesAndAvoidReservedNames() {
+        val yaml = SubscriptionParser.normalizeToClashYaml(listOf(
+            "socks5://example.invalid:1080#PROXY",
+            "socks5://example.invalid:1081#Same",
+            "socks5://example.invalid:1082#Same",
+            "socks5://example.invalid:1083#DIRECT"
+        ).joinToString("\n"))
+        assertTrue(yaml.contains("  - name: \"PROXY-2\""))
+        assertTrue(yaml.contains("  - name: \"Same-2\""))
+        assertTrue(yaml.contains("  - name: \"DIRECT-2\""))
+        assertTrue(yaml.contains("      - \"Same-2\""))
+    }
+
+    @Test
+    fun rejectsInvalidExplicitPortsAndEscapesNodeNames() {
+        assertNull(SubscriptionParser.parseUri("vless://id@example.invalid:bad#node"))
+        assertNull(SubscriptionParser.parseUri("socks5://example.invalid:65536#node"))
+        assertNull(SubscriptionParser.parseUri("ss://YWVzLTEyOC1nY206cGFzcw==@example.invalid:0#node"))
+        val yaml = SubscriptionParser.normalizeToClashYaml("socks5://example.invalid:1080#first%0Asecond")
+        assertTrue(yaml.contains("name: \"first\\nsecond\""))
     }
 }

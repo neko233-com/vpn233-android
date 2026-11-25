@@ -19,14 +19,22 @@
   - 内置精简版 `geoip.metadb` + `geosite.dat`（APK 内仅占用约 `246 KB`），支持设置页一键在线升级为完整版 GeoIP / GeoSite / ASN 数据库。
 - **全场景协议、订阅与网络适配**：
   - 支持标准 Clash / Mihomo YAML 订阅链接导入（自动解析 `Subscription-Userinfo` 流量配额、`Profile-Update-Interval` 与文件名）、Base64 订阅自动解码、常见节点分享链接直转 YAML（`vmess://`、`vless://`、`trojan://`、`ss://`、`hy2://`、`hysteria2://`、`tuic://`、`socks5://`），并支持 **幂等去重导入**（重复导入同 URL、同文件、ZIP、剪贴板或 ADB 配置不会重复生成条目）。
-  - **全局与单配置 YAML Merge 及更新策略**：支持 Clash Verge 风格 **全局 Merge 覆写**（对所有订阅生效）以及每配置独立 `merge.yaml`（支持 `prepend-rules`、`append-rules`、`prepend-proxies`、`prepend-proxy-groups`、`nameserver`、`fake-ip-filter`、`nameserver-policy`），订阅更新与 `.zip` 备份均持久保留；支持亮屏/前台自动更新周期、自定义 `User-Agent` 及 `自动 / 仅经代理 / 仅直连` 拉取通道。
+  - **全局与单配置 YAML Merge 及更新策略**：支持 Clash Verge 风格 **全局 Merge 覆写**（对所有订阅生效）以及每配置独立 `merge.yaml`（支持 `prepend-rules`、`append-rules`、`prepend-proxies`、`prepend-proxy-groups`、`nameserver`、`fake-ip-filter`、`nameserver-policy`）。全局 Merge 保存在本机设置中，单配置 Merge 随订阅更新与配置 ZIP 备份保留；支持亮屏/前台自动更新周期、自定义 `User-Agent` 及 `自动 / 仅经代理 / 仅直连` 拉取通道。
   - **规则命中诊断、出口 IP 检测与切网自愈**：监控弹窗内置 **诊断** 分页，可模拟测试任意域名/IP 命中的规则与最终出站链路、检测公网出口 IP、清理 DNS 与 FakeIP 缓存；开启 Allow LAN 自动展示并可 1 键复制局域网共享地址；Wi-Fi ↔ 5G 切换自动清理旧连接；支持中英实时切换与桌面 **App Shortcuts** 快捷入口。
   - 热切换配置文件、切换服务器节点（如韩国 → 美国）或切换路由模式时，自动 **断开先前所有活跃连接**，确保长连接与 UDP/QUIC 会话立即切换无残留。
   - 支持剪贴板智能识别、本地文件导入、内置 YAML 编辑器与内核级校验、全部订阅批量更新与 `.zip` 备份导出。
-  - 完整支持 **规则 / 全局 / 直连** 实时切换、**允许局域网共享（Allow LAN）**、**IPv6 双栈**、**分应用代理（黑白名单 + 应用图标搜索）**、**DNS 劫持与系统物理 DNS 自动跟踪**、**Sniffer 流量嗅探**、**FakeIP** 与外部 **Proxy/Rule Providers**。
+  - 支持 **规则 / 全局 / 直连** 实时切换：首次使用全局模式优先选择 `PROXY` 策略组，已手动选择的有效节点按配置保留。支持 **允许局域网共享（Allow LAN）**、**IPv6 双栈**、**分应用代理（黑白名单 + 应用图标搜索）**、**DNS 劫持与系统物理 DNS 自动跟踪**、**Sniffer 流量嗅探**、**FakeIP** 与外部 **Proxy/Rule Providers**。
 - **可视化规则编辑与实时连接快捷加规则**：
   - 内置可视化**分流规则编辑器**：支持 `DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`DOMAIN-REGEX`、`IP-CIDR`、`IP-CIDR6`、`SRC-IP-CIDR`、`GEOIP`、`GEOSITE`、`IP-ASN`、`DST-PORT`、`SRC-PORT`、`NETWORK`、`PROCESS-NAME`、`PROCESS-PATH`、`RULE-SET` 以及原始 `AND/OR/SUB-RULE/MATCH` 表达式；支持 `no-resolve`、`前置最高优先` / `兜底规则之前` 优先级调节、单条开关、上下移动与保存即热重载。
   - 支持查看运行中核心的全部生效规则；在**实时连接监控**中点击任意连接即可 1 键生成直连/代理/拦截规则。
+
+---
+
+## 备份与恢复
+
+配置页的 ZIP 备份包含配置、订阅地址和流量元数据、更新策略、每配置 Merge、已缓存的 `providers/` 文件与当前选中的配置。将 ZIP 从配置页重新导入即可恢复；导入到已有配置时会匹配已有条目。旧版本备份没有包含的 provider 文件无法从旧 ZIP 中恢复。
+
+ZIP 内可能包含明文订阅地址和节点凭据，请自行妥善保管。备份不包含全局设置、全局 Merge、自定义规则、节点选择或 Geo 数据库。导入会先校验全部配置与 Merge，并限制压缩包路径、文件数量和大小：单文件最多 16 MiB、解压后总计最多 64 MiB、最多 1024 项、输入文件最多 70 MiB。
 
 ---
 
@@ -123,3 +131,5 @@ CGO_ENABLED=0 go test -v -tags "cmfa,with_gvisor,with_low_memory,no_easytier,no_
 ```
 
 Release APK 输出路径：`app/build/outputs/apk/release/app-release.apk`
+
+正式签名需要本机的 `keystore.properties` 和对应密钥库；这些文件不纳入 Git。未配置正式密钥时，Release 构建只生成 `app-release-unsigned.apk`，不会回退到调试签名。本地单元测试和构建不能代替设备上的 VPN 连接验证。

@@ -19,7 +19,7 @@ object SubscriptionParser {
         if (lines.isEmpty()) return rawContent
 
         val nodes = mutableListOf<ParsedProxy>()
-        val usedNames = HashSet<String>()
+        val usedNames = hashSetOf("DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL", "PROXY", "自动选择", "故障转移")
         lines.forEachIndexed { idx, line ->
             parseUri(line, idx + 1)?.let { node ->
                 var unique = node.name.ifBlank { "Node-${idx + 1}" }
@@ -28,7 +28,7 @@ object SubscriptionParser {
                     unique = "${node.name}-$suffix"
                     suffix++
                 }
-                nodes.add(node.copy(name = unique))
+                nodes.add(node.copy(name = unique, yamlLines = listOf("  - name: ${q(unique)}") + node.yamlLines.drop(1)))
             }
         }
         if (nodes.isEmpty()) return rawContent
@@ -75,7 +75,7 @@ object SubscriptionParser {
     }
 
     private fun parseVmess(raw: String, idx: Int): ParsedProxy? {
-        val body = raw.removePrefix("vmess://").substringBefore('#').trim()
+        val body = raw.substringAfter("://").substringBefore('#').trim()
         val jsonText = tryDecodeRawBase64(body) ?: return null
         return runCatching {
             val obj = JSONObject(jsonText)
@@ -83,7 +83,7 @@ object SubscriptionParser {
             val server = obj.optString("add")
             val port = obj.opt("port")?.toString()?.toIntOrNull() ?: return null
             val uuid = obj.optString("id")
-            if (server.isBlank() || uuid.isBlank()) return null
+            if (server.isBlank() || uuid.isBlank() || port !in 1..65535) return null
             val aid = obj.opt("aid")?.toString()?.toIntOrNull() ?: 0
             val net = obj.optString("net", "tcp").lowercase()
             val tls = obj.optString("tls").equals("tls", true)
@@ -168,18 +168,20 @@ object SubscriptionParser {
             if (endBracket <= 1) return null
             host = hostPort.substring(1, endBracket)
             val rest = hostPort.substring(endBracket + 1)
-            port = if (rest.startsWith(":")) rest.substring(1).toIntOrNull() else null
+            if (rest.isNotEmpty() && !rest.startsWith(":")) return null
+            port = if (rest.startsWith(":")) rest.substring(1).toIntOrNull() ?: return null else null
         } else {
             val colonIdx = hostPort.lastIndexOf(':')
             if (colonIdx > 0) {
                 host = hostPort.substring(0, colonIdx)
-                port = hostPort.substring(colonIdx + 1).toIntOrNull()
+                if (':' in host) return null // IPv6 literals must be bracketed.
+                port = hostPort.substring(colonIdx + 1).toIntOrNull() ?: return null
             } else {
                 host = hostPort
                 port = null
             }
         }
-        if (host.isBlank()) return null
+        if (host.isBlank() || (port != null && port !in 1..65535)) return null
         return SafeUri(scheme, userInfo, host, port, path, parseQuery(rawQuery), fragment)
     }
 
@@ -288,7 +290,7 @@ object SubscriptionParser {
         val password = creds.substringAfter(':', "")
         val host = hostPort.substringBeforeLast(':').trim('[', ']')
         val port = hostPort.substringAfterLast(':').toIntOrNull() ?: return null
-        if (host.isBlank() || method.isBlank()) return null
+        if (host.isBlank() || method.isBlank() || port !in 1..65535) return null
         return ParsedProxy(
             name,
             listOf(
@@ -430,7 +432,7 @@ object SubscriptionParser {
     private fun decodeFrag(frag: String?): String = if (frag.isNullOrBlank()) "" else decode(frag)
 
     private fun decode(s: String): String =
-        runCatching { URLDecoder.decode(s, "UTF-8") }.getOrDefault(s)
+        runCatching { URLDecoder.decode(s.replace("+", "%2B"), "UTF-8") }.getOrDefault(s)
 
     private fun tryDecodeRawBase64(s: String): String? {
         val norm = s.trim().replace('-', '+').replace('_', '/')
@@ -442,8 +444,5 @@ object SubscriptionParser {
         return runCatching { Base64.getDecoder().decode(padded).toString(Charsets.UTF_8) }.getOrNull()
     }
 
-    private fun q(s: String): String {
-        val escaped = s.replace("\\", "\\\\").replace("\"", "\\\"")
-        return "\"$escaped\""
-    }
+    private fun q(s: String): String = JSONObject.quote(s)
 }

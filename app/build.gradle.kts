@@ -22,8 +22,8 @@ android {
         applicationId = "com.neko233.vpn233"
         minSdk = 26
         targetSdk = 36
-        versionCode = 123
-        versionName = "1.2.3"
+        versionCode = 130
+        versionName = "1.3.0"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -55,7 +55,7 @@ android {
             signingConfig = if (keystorePropsFile.exists()) {
                 signingConfigs.getByName("release")
             } else {
-                signingConfigs.getByName("debug")
+                null
             }
         }
         debug {

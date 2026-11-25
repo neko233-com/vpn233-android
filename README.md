@@ -19,14 +19,22 @@ A sleek, ultra-low-power, high-performance **arm64-v8a** Android proxy client wr
   - Lightweight bootstrap `geoip.metadb` + `geosite.dat` (`~246 KB` compressed in APK) with 1-tap online upgrade to full GeoIP / GeoSite / ASN databases via jsDelivr.
 - **Full Protocol, Subscription & Scenario Support**:
   - Imports standard Clash / Mihomo YAML subscriptions (parses `Subscription-Userinfo`, `Profile-Update-Interval`, `Content-Disposition`), Base64 proxy lists, and share links (`vmess://`, `vless://`, `trojan://`, `ss://`, `hy2://`, `hysteria2://`, `tuic://`, `socks5://`) with **idempotent deduplication** (repeated URL, file, ZIP, clipboard, or ADB imports update in-place without duplicates or needless tunnel resets).
-  - **Global & Per-Profile YAML Merge & Auto-Update Policies**: Clash Verge style global Merge (`globalMergeYaml`, applied across every profile) plus per-profile `merge.yaml` overrides (`prepend-rules`, `append-rules`, `prepend-proxies`, `prepend-proxy-groups`, `nameserver`, `fake-ip-filter`, `nameserver-policy`) preserved across subscription updates & backups; configurable auto-update intervals (checked cleanly on wake/foreground with zero sleep wakeups), custom `User-Agent`, and `Auto` / `Proxy` / `Direct` fetch routing.
+  - **Global & Per-Profile YAML Merge & Auto-Update Policies**: Clash Verge style global Merge (`globalMergeYaml`, applied across every profile) plus per-profile `merge.yaml` overrides (`prepend-rules`, `append-rules`, `prepend-proxies`, `prepend-proxy-groups`, `nameserver`, `fake-ip-filter`, `nameserver-policy`). Global Merge is stored in local settings; per-profile Merge survives subscription updates and profile ZIP backups. Supports wake/foreground auto-update intervals, custom `User-Agent`, and `Auto` / `Proxy` / `Direct` fetch routing.
   - **Diagnostics, Rule-Match Tester & Network Resilience**: built-in **Diagnostics** tab to simulate any domain/IP:port against live Mihomo rules & view exact outbound chains, verify exit IP/country, flush DNS & FakeIP caches, display LAN `IP:port` copy pills, switch between **ZH / EN** UI live, use launcher **App Shortcuts**, and auto-close stale half-open sockets on Wi-Fi ↔ 5G switches.
   - Hot-switching active profiles (`activate_profile` / UI), switching proxy nodes (e.g. Korea → USA), or changing routing mode automatically **closes all previous active connections** so no stale sockets remain pinned to the prior route.
   - Built-in YAML editor with live core validation, batch subscription update, and `.zip` full backup export.
-  - Supports **Rule / Global / Direct** live mode switching, **Allow LAN** sharing (`0.0.0.0:<port>`), **IPv6** dual-stack, **Per-App Proxy** (allowlist/denylist with app icon search), **DNS Hijack**, **Sniffer**, **FakeIP**, and **Proxy/Rule Providers**.
+  - Supports **Rule / Global / Direct** live mode switching. Global mode initially prefers the `PROXY` group and retains valid user selections per profile. Also supports **Allow LAN** sharing (`0.0.0.0:<port>`), **IPv6** dual-stack, **Per-App Proxy** (allowlist/denylist with app icon search), **DNS Hijack**, **Sniffer**, **FakeIP**, and **Proxy/Rule Providers**.
 - **Interactive Rule Editor & Live Connection Actions**:
   - Visual rule builder supporting `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-REGEX`, `IP-CIDR`, `IP-CIDR6`, `SRC-IP-CIDR`, `GEOIP`, `GEOSITE`, `IP-ASN`, `DST-PORT`, `SRC-PORT`, `NETWORK`, `PROCESS-NAME`, `PROCESS-PATH`, `RULE-SET`, and raw `AND`/`OR`/`SUB-RULE`/`MATCH` expressions with `no-resolve`, ordering (`PREPEND` or `BEFORE_MATCH`), toggle switches, and live hot-reload.
   - Inspect all active core rules and create rules with 1 tap directly from any entry in **Active Connections**.
+
+---
+
+## Backup and restore
+
+The profiles ZIP includes configs, subscription URLs and traffic metadata, update options, per-profile Merge, cached `providers/` files, and the selected profile. Import the ZIP from the profiles screen to restore it; existing profiles are matched where possible. Provider files omitted by older backups cannot be recovered from those archives.
+
+ZIP backups can contain subscription URLs and node credentials in plaintext; store them securely. Global settings, global Merge, custom rules, selected nodes, and Geo databases are not included. Import validates all configs and Merge files before changes and limits archive paths, entry count, and size: 16 MiB per entry, 64 MiB expanded, 1,024 entries, and 70 MiB input.
 
 ---
 
@@ -123,3 +131,5 @@ Rebuild native shared library:
 ```
 
 Release APK output: `app/build/outputs/apk/release/app-release.apk`
+
+Production signing requires a local `keystore.properties` and its keystore, neither of which is tracked in Git. Without production signing credentials, the release build produces `app-release-unsigned.apk` instead of silently using a debug key. Local unit tests and builds do not replace an on-device VPN connection test.
