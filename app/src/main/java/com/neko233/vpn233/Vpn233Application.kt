@@ -14,19 +14,32 @@ class Vpn233Application : Application() {
     lateinit var profileRepository: ProfileRepository
         private set
 
+    @Volatile
+    private var initialized = false
+    private val initLock = Any()
+
     override fun onCreate() {
         super.onCreate()
-        instance = this
-        MihomoBridge.attachContext(this)
-        settingsStore = SettingsStore(this)
-        geoDatabaseManager = GeoDatabaseManager(this).apply {
-            ensureBootstrapAssets()
+        ensureInitialized()
+    }
+
+    fun ensureInitialized() {
+        if (initialized) return
+        synchronized(initLock) {
+            if (initialized) return
+            instance = this
+            MihomoBridge.attachContext(this)
+            settingsStore = SettingsStore(this)
+            geoDatabaseManager = GeoDatabaseManager(this).apply {
+                ensureBootstrapAssets()
+            }
+            MihomoBridge.init(
+                geoDatabaseManager.homeDir.absolutePath,
+                "v1.19.34 (vpn233 ${BuildConfig.VERSION_NAME})"
+            )
+            profileRepository = ProfileRepository(this)
+            initialized = true
         }
-        MihomoBridge.init(
-            geoDatabaseManager.homeDir.absolutePath,
-            "v1.19.34 (vpn233 ${BuildConfig.VERSION_NAME})"
-        )
-        profileRepository = ProfileRepository(this)
     }
 
     companion object {

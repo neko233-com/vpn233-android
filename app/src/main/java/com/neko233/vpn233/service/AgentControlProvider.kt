@@ -45,6 +45,7 @@ class AgentControlProvider : ContentProvider() {
         }
         val ctx = context ?: return errBundle("Context unavailable")
         val app = ctx.applicationContext as? Vpn233Application ?: return errBundle("Application not ready")
+        app.ensureInitialized()
 
         return runCatching {
             when (method.lowercase()) {
