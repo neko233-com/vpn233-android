@@ -15,7 +15,9 @@ import (
 
 	"github.com/dlclark/regexp2"
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
+	"github.com/metacubex/mihomo/common/orderedmap"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/config"
 	C2 "github.com/metacubex/mihomo/constant"
@@ -44,18 +46,21 @@ type OverrideOptions struct {
 	AppendRules         []string `json:"appendRules,omitempty"`
 	FakeIPFilterExtra   []string `json:"fakeIpFilterExtra,omitempty"`
 	LogLevel            *string  `json:"logLevel,omitempty"`
+	GlobalMergeYaml     *string  `json:"globalMergeYaml,omitempty"`
 	MergeYaml           *string  `json:"mergeYaml,omitempty"`
 }
 
 type MergeConfig struct {
-	PrependRules       []string         `yaml:"prepend-rules"`
-	AppendRules        []string         `yaml:"append-rules"`
-	PrependProxies     []map[string]any `yaml:"prepend-proxies"`
-	AppendProxies      []map[string]any `yaml:"append-proxies"`
-	PrependProxyGroups []map[string]any `yaml:"prepend-proxy-groups"`
-	AppendProxyGroups  []map[string]any `yaml:"append-proxy-groups"`
-	Rules              []string         `yaml:"rules"`
-	NameServers        []string         `yaml:"nameserver"`
+	PrependRules       []string                              `yaml:"prepend-rules"`
+	AppendRules        []string                              `yaml:"append-rules"`
+	PrependProxies     []map[string]any                      `yaml:"prepend-proxies"`
+	AppendProxies      []map[string]any                      `yaml:"append-proxies"`
+	PrependProxyGroups []map[string]any                      `yaml:"prepend-proxy-groups"`
+	AppendProxyGroups  []map[string]any                      `yaml:"append-proxy-groups"`
+	Rules              []string                              `yaml:"rules"`
+	NameServers        []string                              `yaml:"nameserver"`
+	FakeIPFilter       []string                              `yaml:"fake-ip-filter"`
+	NameServerPolicy   *orderedmap.OrderedMap[string, any]   `yaml:"nameserver-policy"`
 }
 
 type matchResultDTO struct {
@@ -222,40 +227,35 @@ func resolveAndPatchConfig(profileDir string, overrideJson string) (*config.RawC
 		return out
 	}
 
-	var mergeSpec MergeConfig
-	hasMerge := ov.MergeYaml != nil && strings.TrimSpace(*ov.MergeYaml) != ""
-	if hasMerge {
-		if err := yaml.Unmarshal([]byte(*ov.MergeYaml), &mergeSpec); err != nil {
-			return nil, fmt.Errorf("parse merge yaml: %w", err)
+	var globalPrepend, globalAppend, profilePrepend, profileAppend []string
+	var errMerge error
+	if ov.GlobalMergeYaml != nil && strings.TrimSpace(*ov.GlobalMergeYaml) != "" {
+		globalPrepend, globalAppend, errMerge = applyMergeYamlSpec(rawCfg, ov.NameServers, *ov.GlobalMergeYaml, cleanNonBlank)
+		if errMerge != nil {
+			return nil, fmt.Errorf("parse global merge yaml: %w", errMerge)
 		}
-		if len(mergeSpec.PrependProxies) > 0 {
-			rawCfg.Proxy = append(append([]map[string]any{}, mergeSpec.PrependProxies...), rawCfg.Proxy...)
-		}
-		if len(mergeSpec.AppendProxies) > 0 {
-			rawCfg.Proxy = append(rawCfg.Proxy, mergeSpec.AppendProxies...)
-		}
-		if len(mergeSpec.PrependProxyGroups) > 0 {
-			rawCfg.ProxyGroup = append(append([]map[string]any{}, mergeSpec.PrependProxyGroups...), rawCfg.ProxyGroup...)
-		}
-		if len(mergeSpec.AppendProxyGroups) > 0 {
-			rawCfg.ProxyGroup = append(rawCfg.ProxyGroup, mergeSpec.AppendProxyGroups...)
-		}
-		if mRules := cleanNonBlank(mergeSpec.Rules); len(mRules) > 0 {
-			rawCfg.Rule = mRules
-		}
-		if len(ov.NameServers) == 0 && len(mergeSpec.NameServers) > 0 {
-			rawCfg.DNS.NameServer = cleanNonBlank(mergeSpec.NameServers)
+	}
+	if ov.MergeYaml != nil && strings.TrimSpace(*ov.MergeYaml) != "" {
+		profilePrepend, profileAppend, errMerge = applyMergeYamlSpec(rawCfg, ov.NameServers, *ov.MergeYaml, cleanNonBlank)
+		if errMerge != nil {
+			return nil, fmt.Errorf("parse merge yaml: %w", errMerge)
 		}
 	}
 
-	prependRules := append(cleanNonBlank(ov.PrependRules), cleanNonBlank(mergeSpec.PrependRules)...)
+	prependRules := append(cleanNonBlank(ov.PrependRules), profilePrepend...)
+	prependRules = append(prependRules, globalPrepend...)
 	if len(prependRules) > 0 {
 		rawCfg.Rule = append(prependRules, rawCfg.Rule...)
 	}
-	appendRules := append(cleanNonBlank(mergeSpec.AppendRules), cleanNonBlank(ov.AppendRules)...)
+	appendRules := append([]string{}, globalAppend...)
+	appendRules = append(appendRules, profileAppend...)
+	appendRules = append(appendRules, cleanNonBlank(ov.AppendRules)...)
 	if len(appendRules) > 0 {
 		rawCfg.Rule = insertRulesBeforeMatch(rawCfg.Rule, appendRules)
 	}
+
+	rawCfg.ProxyGroup = sanitizeBuiltinShadowGroups(rawCfg.ProxyGroup)
+	rawCfg.Rule = filterUnavailableGeoSiteRules(rawCfg.Rule)
 
 	if len(rawCfg.Listeners) > 0 {
 		filtered := make([]map[string]any, 0, len(rawCfg.Listeners))
@@ -315,6 +315,116 @@ func buildRulesDTO(rules []C2.Rule) []ruleDTO {
 		})
 	}
 	return res
+}
+
+func applyMergeYamlSpec(
+	rawCfg *config.RawConfig,
+	overrideNameServers []string,
+	yamlText string,
+	cleanNonBlank func([]string) []string,
+) (prependRules []string, appendRules []string, err error) {
+	var spec MergeConfig
+	if err := yaml.Unmarshal([]byte(yamlText), &spec); err != nil {
+		return nil, nil, err
+	}
+	if len(spec.PrependProxies) > 0 {
+		rawCfg.Proxy = append(append([]map[string]any{}, spec.PrependProxies...), rawCfg.Proxy...)
+	}
+	if len(spec.AppendProxies) > 0 {
+		rawCfg.Proxy = append(rawCfg.Proxy, spec.AppendProxies...)
+	}
+	if len(spec.PrependProxyGroups) > 0 {
+		rawCfg.ProxyGroup = append(append([]map[string]any{}, spec.PrependProxyGroups...), rawCfg.ProxyGroup...)
+	}
+	if len(spec.AppendProxyGroups) > 0 {
+		rawCfg.ProxyGroup = append(rawCfg.ProxyGroup, spec.AppendProxyGroups...)
+	}
+	if mRules := cleanNonBlank(spec.Rules); len(mRules) > 0 {
+		rawCfg.Rule = mRules
+	}
+	if len(overrideNameServers) == 0 && len(spec.NameServers) > 0 {
+		rawCfg.DNS.NameServer = cleanNonBlank(spec.NameServers)
+	}
+	if extraFilters := cleanNonBlank(spec.FakeIPFilter); len(extraFilters) > 0 {
+		seen := make(map[string]bool, len(rawCfg.DNS.FakeIPFilter))
+		for _, f := range rawCfg.DNS.FakeIPFilter {
+			seen[f] = true
+		}
+		for _, f := range extraFilters {
+			if !seen[f] {
+				rawCfg.DNS.FakeIPFilter = append(rawCfg.DNS.FakeIPFilter, f)
+				seen[f] = true
+			}
+		}
+	}
+	if spec.NameServerPolicy != nil && spec.NameServerPolicy.Len() > 0 {
+		if rawCfg.DNS.NameServerPolicy == nil {
+			rawCfg.DNS.NameServerPolicy = orderedmap.New[string, any]()
+		}
+		for pair := spec.NameServerPolicy.Oldest(); pair != nil; pair = pair.Next() {
+			rawCfg.DNS.NameServerPolicy.Set(pair.Key, pair.Value)
+		}
+	}
+	return cleanNonBlank(spec.PrependRules), cleanNonBlank(spec.AppendRules), nil
+}
+
+// Drop shadowed reserved adapter groups (e.g. legacy subconverter `- name: DIRECT / proxies: [DIRECT]`)
+// that trigger Mihomo's ProxyGroup cycle check.
+func sanitizeBuiltinShadowGroups(groups []map[string]any) []map[string]any {
+	if len(groups) == 0 {
+		return groups
+	}
+	reserved := map[string]bool{
+		"DIRECT":      true,
+		"REJECT":      true,
+		"REJECT-DROP": true,
+		"PASS":        true,
+		"COMPATIBLE":  true,
+	}
+	out := make([]map[string]any, 0, len(groups))
+	for _, g := range groups {
+		name, _ := g["name"].(string)
+		if reserved[strings.ToUpper(strings.TrimSpace(name))] {
+			continue
+		}
+		out = append(out, g)
+	}
+	return out
+}
+
+// Skip GEOSITE rules whose category is missing in the bundled lite geosite.dat so
+// offline imports and first-time VPN startup do not abort before GeoDB upgrade.
+func filterUnavailableGeoSiteRules(rules []string) []string {
+	hasGeoSite := false
+	for _, r := range rules {
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(r)), "GEOSITE,") {
+			hasGeoSite = true
+			break
+		}
+	}
+	if !hasGeoSite {
+		return rules
+	}
+	if _, err := os.Stat(C2.Path.GeoSite()); err != nil {
+		return rules
+	}
+	if err := geodata.InitGeoSite(); err != nil {
+		return rules
+	}
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		trimmed := strings.TrimSpace(r)
+		parts := strings.Split(trimmed, ",")
+		if len(parts) >= 2 && strings.EqualFold(strings.TrimSpace(parts[0]), "GEOSITE") {
+			code := strings.TrimSpace(parts[1])
+			if _, err := geodata.LoadGeoSiteMatcher(code); err != nil {
+				log.Warnln("Skipping unavailable GEOSITE rule %q with current geosite.dat: %v", code, err)
+				continue
+			}
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 func insertRulesBeforeMatch(existing []string, toInsert []string) []string {

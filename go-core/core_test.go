@@ -226,6 +226,10 @@ proxies:
     server: 127.0.0.1
     port: 10808
 proxy-groups:
+  - name: "DIRECT"
+    type: select
+    proxies:
+      - DIRECT
   - name: "AUTO"
     type: select
     proxies:
@@ -254,10 +258,19 @@ prepend-rules:
 append-rules:
   - DOMAIN-KEYWORD,internal,DIRECT
 `
+	globalMerge := `
+prepend-rules:
+  - DOMAIN-SUFFIX,global.example,DIRECT
+fake-ip-filter:
+  - "*.global.local"
+nameserver-policy:
+  "+.corp.example": "114.114.114.114"
+`
 	ovBytes, _ := json.Marshal(map[string]any{
-		"mode":         "rule",
-		"mergeYaml":    mergeYaml,
-		"prependRules": []string{"DOMAIN,top.example,REJECT"},
+		"mode":            "rule",
+		"globalMergeYaml": globalMerge,
+		"mergeYaml":       mergeYaml,
+		"prependRules":    []string{"DOMAIN,top.example,REJECT"},
 	})
 	rawCfg, err := resolveAndPatchConfig(dir, string(ovBytes))
 	if err != nil {
@@ -265,6 +278,22 @@ append-rules:
 	}
 	if len(rawCfg.Proxy) != 2 || rawCfg.Proxy[0]["name"] != "Custom-US" {
 		t.Fatalf("expected prepended proxy Custom-US, got %+v", rawCfg.Proxy)
+	}
+	if rawCfg.DNS.NameServerPolicy == nil {
+		t.Fatalf("expected nameserver-policy merged from globalMergeYaml")
+	}
+	if _, ok := rawCfg.DNS.NameServerPolicy.Get("+.corp.example"); !ok {
+		t.Fatalf("expected +.corp.example in NameServerPolicy")
+	}
+	hasGlobalFakeIP := false
+	for _, f := range rawCfg.DNS.FakeIPFilter {
+		if f == "*.global.local" {
+			hasGlobalFakeIP = true
+			break
+		}
+	}
+	if !hasGlobalFakeIP {
+		t.Fatalf("expected *.global.local in FakeIPFilter: %v", rawCfg.DNS.FakeIPFilter)
 	}
 	cfg, err := config.ParseRawConfig(rawCfg)
 	if err != nil {
@@ -306,5 +335,61 @@ rules:
 	}
 	if _, err := resolveAndPatchConfig(dir, ""); err == nil {
 		t.Fatalf("expected error when neither proxies nor proxy-providers exist")
+	}
+}
+
+func TestLiteGeoSiteAndShadowDirectGroupTolerance(t *testing.T) {
+	dir := t.TempDir()
+	C2.SetHomeDir(dir)
+	t.Cleanup(func() {
+		closeAllConnectionsInternal()
+		executor.Shutdown()
+		_ = cachefile.Cache().Close()
+	})
+
+	assetsDir := filepath.Join("..", "app", "src", "main", "assets")
+	for _, asset := range []string{"geosite.dat", "geoip.metadb"} {
+		data, err := os.ReadFile(filepath.Join(assetsDir, asset))
+		if err != nil {
+			t.Skipf("bundled asset %s not found: %v", asset, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, asset), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	yamlContent := `
+proxies:
+  - name: "Node-01"
+    type: socks5
+    server: 127.0.0.1
+    port: 10808
+proxy-groups:
+  - name: "DIRECT"
+    type: select
+    proxies:
+      - DIRECT
+  - name: "PROXY"
+    type: select
+    proxies:
+      - Node-01
+      - DIRECT
+rules:
+  - GEOSITE,netflix,PROXY
+  - GEOSITE,hbo,PROXY
+  - GEOSITE,mytvsuper,PROXY
+  - GEOSITE,CN,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,PROXY
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rawCfg, err := resolveAndPatchConfig(dir, `{"mode":"rule"}`)
+	if err != nil {
+		t.Fatalf("resolveAndPatchConfig failed: %v", err)
+	}
+	if _, err := config.ParseRawConfig(rawCfg); err != nil {
+		t.Fatalf("ParseRawConfig failed with lite geosite.dat: %v", err)
 	}
 }
