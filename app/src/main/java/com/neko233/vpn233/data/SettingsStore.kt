@@ -158,7 +158,11 @@ class SettingsStore(context: Context) {
         }
         val tmp = File(baseDir, "settings.json.tmp")
         tmp.writeText(obj.toString(2), Charsets.UTF_8)
-        tmp.renameTo(settingsFile)
+        java.nio.file.Files.move(
+            tmp.toPath(),
+            settingsFile.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+        )
     }
 
     fun toOverrideJson(s: AppSettings = _settings.value): String {
@@ -228,7 +232,11 @@ class SettingsStore(context: Context) {
             root.put(profileId, pObj)
             val tmp = File(baseDir, "selections.json.tmp")
             tmp.writeText(root.toString(), Charsets.UTF_8)
-            tmp.renameTo(selectionsFile)
+            java.nio.file.Files.move(
+                tmp.toPath(),
+                selectionsFile.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING
+            )
         }
     }
 }

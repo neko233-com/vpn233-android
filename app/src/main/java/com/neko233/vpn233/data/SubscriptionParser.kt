@@ -1,7 +1,6 @@
 package com.neko233.vpn233.data
 
 import org.json.JSONObject
-import java.net.URI
 import java.net.URLDecoder
 import java.util.Base64
 
@@ -16,7 +15,7 @@ object SubscriptionParser {
         val candidate = if (decoded != null && decoded.isNotBlank()) decoded.trim() else trimmed
         if (looksLikeClashYaml(candidate)) return candidate
 
-        val lines = candidate.lines().map { it.trim() }.filter { it.contains("://") }
+        val lines = candidate.lines().map { it.trim() }.filter { it.contains("://") }.distinct()
         if (lines.isEmpty()) return rawContent
 
         val nodes = mutableListOf<ParsedProxy>()
@@ -130,13 +129,67 @@ object SubscriptionParser {
         }.getOrNull()
     }
 
+    private data class SafeUri(
+        val scheme: String,
+        val userInfo: String?,
+        val host: String,
+        val port: Int?,
+        val path: String,
+        val query: Map<String, String>,
+        val fragment: String
+    )
+
+    private fun parseSafeUri(raw: String): SafeUri? {
+        val schemeIdx = raw.indexOf("://")
+        if (schemeIdx <= 0) return null
+        val scheme = raw.substring(0, schemeIdx).lowercase()
+        val afterScheme = raw.substring(schemeIdx + 3)
+        val fragIdx = afterScheme.indexOf('#')
+        val mainPart = if (fragIdx >= 0) afterScheme.substring(0, fragIdx) else afterScheme
+        val fragment = if (fragIdx >= 0) decodeFrag(afterScheme.substring(fragIdx + 1)) else ""
+
+        val queryIdx = mainPart.indexOf('?')
+        val authorityAndPath = if (queryIdx >= 0) mainPart.substring(0, queryIdx) else mainPart
+        val rawQuery = if (queryIdx >= 0) mainPart.substring(queryIdx + 1) else null
+
+        val slashIdx = authorityAndPath.indexOf('/')
+        val authority = if (slashIdx >= 0) authorityAndPath.substring(0, slashIdx) else authorityAndPath
+        val path = if (slashIdx >= 0) authorityAndPath.substring(slashIdx) else "/"
+
+        val atIdx = authority.lastIndexOf('@')
+        val userInfo = if (atIdx >= 0) decode(authority.substring(0, atIdx)) else null
+        val hostPort = (if (atIdx >= 0) authority.substring(atIdx + 1) else authority).trim()
+        if (hostPort.isBlank()) return null
+
+        val host: String
+        val port: Int?
+        if (hostPort.startsWith("[")) {
+            val endBracket = hostPort.indexOf(']')
+            if (endBracket <= 1) return null
+            host = hostPort.substring(1, endBracket)
+            val rest = hostPort.substring(endBracket + 1)
+            port = if (rest.startsWith(":")) rest.substring(1).toIntOrNull() else null
+        } else {
+            val colonIdx = hostPort.lastIndexOf(':')
+            if (colonIdx > 0) {
+                host = hostPort.substring(0, colonIdx)
+                port = hostPort.substring(colonIdx + 1).toIntOrNull()
+            } else {
+                host = hostPort
+                port = null
+            }
+        }
+        if (host.isBlank()) return null
+        return SafeUri(scheme, userInfo, host, port, path, parseQuery(rawQuery), fragment)
+    }
+
     private fun parseVless(raw: String, idx: Int): ParsedProxy? {
-        val uri = runCatching { URI(raw) }.getOrNull() ?: return null
-        val server = uri.host ?: return null
-        val port = if (uri.port > 0) uri.port else 443
-        val uuid = uri.userInfo ?: return null
-        val qMap = parseQuery(uri.rawQuery)
-        val name = decodeFrag(uri.rawFragment).ifBlank { "VLESS-$idx" }
+        val uri = parseSafeUri(raw) ?: return null
+        val server = uri.host
+        val port = uri.port ?: 443
+        val uuid = uri.userInfo?.takeIf { it.isNotBlank() } ?: return null
+        val qMap = uri.query
+        val name = uri.fragment.ifBlank { "VLESS-$idx" }
         val security = qMap["security"].orEmpty().lowercase()
         val net = qMap["type"].orEmpty().lowercase().ifBlank { "tcp" }
         val lines = mutableListOf(
@@ -186,12 +239,12 @@ object SubscriptionParser {
     }
 
     private fun parseTrojan(raw: String, idx: Int): ParsedProxy? {
-        val uri = runCatching { URI(raw) }.getOrNull() ?: return null
-        val server = uri.host ?: return null
-        val port = if (uri.port > 0) uri.port else 443
-        val password = uri.userInfo ?: return null
-        val qMap = parseQuery(uri.rawQuery)
-        val name = decodeFrag(uri.rawFragment).ifBlank { "Trojan-$idx" }
+        val uri = parseSafeUri(raw) ?: return null
+        val server = uri.host
+        val port = uri.port ?: 443
+        val password = uri.userInfo?.takeIf { it.isNotBlank() } ?: return null
+        val qMap = uri.query
+        val name = uri.fragment.ifBlank { "Trojan-$idx" }
         val lines = mutableListOf(
             "  - name: ${q(name)}",
             "    type: trojan",
@@ -230,7 +283,7 @@ object SubscriptionParser {
             tryDecodeRawBase64(mainPart) ?: return null
         }
         val creds = userAndHost.substringBeforeLast('@')
-        val hostPort = userAndHost.substringAfterLast('@')
+        val hostPort = userAndHost.substringAfterLast('@').substringBefore('/')
         val method = creds.substringBefore(':')
         val password = creds.substringAfter(':', "")
         val host = hostPort.substringBeforeLast(':').trim('[', ']')
@@ -251,13 +304,12 @@ object SubscriptionParser {
     }
 
     private fun parseHysteria2(raw: String, idx: Int): ParsedProxy? {
-        val normalized = if (raw.startsWith("hy2://", true)) "https://" + raw.substring(6) else "https://" + raw.substring(12)
-        val uri = runCatching { URI(normalized) }.getOrNull() ?: return null
-        val server = uri.host ?: return null
-        val port = if (uri.port > 0) uri.port else 443
-        val password = uri.userInfo ?: return null
-        val qMap = parseQuery(uri.rawQuery)
-        val name = decodeFrag(uri.rawFragment).ifBlank { "HY2-$idx" }
+        val uri = parseSafeUri(raw) ?: return null
+        val server = uri.host
+        val port = uri.port ?: 443
+        val password = uri.userInfo?.takeIf { it.isNotBlank() } ?: return null
+        val qMap = uri.query
+        val name = uri.fragment.ifBlank { "HY2-$idx" }
         val lines = mutableListOf(
             "  - name: ${q(name)}",
             "    type: hysteria2",
@@ -279,14 +331,14 @@ object SubscriptionParser {
     }
 
     private fun parseTuic(raw: String, idx: Int): ParsedProxy? {
-        val uri = runCatching { URI(raw) }.getOrNull() ?: return null
-        val server = uri.host ?: return null
-        val port = if (uri.port > 0) uri.port else 443
-        val ui = uri.userInfo ?: return null
+        val uri = parseSafeUri(raw) ?: return null
+        val server = uri.host
+        val port = uri.port ?: 443
+        val ui = uri.userInfo?.takeIf { it.isNotBlank() } ?: return null
         val uuid = ui.substringBefore(':')
         val password = ui.substringAfter(':', "")
-        val qMap = parseQuery(uri.rawQuery)
-        val name = decodeFrag(uri.rawFragment).ifBlank { "TUIC-$idx" }
+        val qMap = uri.query
+        val name = uri.fragment.ifBlank { "TUIC-$idx" }
         val lines = mutableListOf(
             "  - name: ${q(name)}",
             "    type: tuic",
@@ -305,10 +357,10 @@ object SubscriptionParser {
     }
 
     private fun parseSocks(raw: String, idx: Int): ParsedProxy? {
-        val uri = runCatching { URI(raw) }.getOrNull() ?: return null
-        val server = uri.host ?: return null
-        val port = if (uri.port > 0) uri.port else 1080
-        val name = decodeFrag(uri.rawFragment).ifBlank { "SOCKS-$idx" }
+        val uri = parseSafeUri(raw) ?: return null
+        val server = uri.host
+        val port = uri.port ?: 1080
+        val name = uri.fragment.ifBlank { "SOCKS-$idx" }
         val lines = mutableListOf(
             "  - name: ${q(name)}",
             "    type: socks5",

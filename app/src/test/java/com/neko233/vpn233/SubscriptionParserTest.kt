@@ -52,8 +52,24 @@ class SubscriptionParserTest {
     fun deduplicatesIdenticalNodeNames() {
         val ss1 = "ss://YWVzLTEyOC1nY206cGFzcw==@1.1.1.1:443#SameName"
         val ss2 = "ss://YWVzLTEyOC1nY206cGFzcw==@2.2.2.2:443#SameName"
-        val yaml = SubscriptionParser.normalizeToClashYaml("$ss1\n$ss2")
+        val ssDup = "ss://YWVzLTEyOC1nY206cGFzcw==@1.1.1.1:443#SameName"
+        val yaml = SubscriptionParser.normalizeToClashYaml("$ss1\n$ss2\n$ssDup")
         assertTrue(yaml.contains("\"SameName\""))
         assertTrue(yaml.contains("\"SameName-2\""))
+        assertTrue(!yaml.contains("\"SameName-3\""))
+    }
+
+    @Test
+    fun parsesUnencodedSpacesPipesAndEmojiFragmentsSafely() {
+        val vless = "vless://22222222-2222-2222-2222-222222222222@us.example.com:443?security=tls&sni=us.example.com#🇺🇸 美国 01 | 高速"
+        val trojan = "trojan://pass123@kr.example.com:443?sni=kr.example.com#🇰🇷 韩国 [专线]"
+        val hy2 = "hy2://mypass@jp.example.com:8443?sni=jp.example.com#🇯🇵 日本 HY2"
+        val yaml = SubscriptionParser.normalizeToClashYaml("$vless\n$trojan\n$hy2")
+        assertTrue(yaml.contains("🇺🇸 美国 01 | 高速"))
+        assertTrue(yaml.contains("🇰🇷 韩国 [专线]"))
+        assertTrue(yaml.contains("🇯🇵 日本 HY2"))
+        assertTrue(yaml.contains("type: vless"))
+        assertTrue(yaml.contains("type: trojan"))
+        assertTrue(yaml.contains("type: hysteria2"))
     }
 }

@@ -18,14 +18,29 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLDecoder
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
-class ProfileRepository(private val context: Context) {
-    private val profilesRoot = File(context.filesDir, "profiles").apply { mkdirs() }
-    private val metaFile = File(context.filesDir, "vpn233/profiles.json")
+data class ProfileSaveResult(
+    val item: ProfileItem,
+    val created: Boolean,
+    val contentChanged: Boolean
+)
+
+/**
+ * Pure filesystem-backed profile store separated from Android Context so JVM tests can verify
+ * idempotent imports, metadata persistence, and archive extraction directly.
+ */
+internal class ProfileStorageEngine(
+    filesDir: File,
+    private val cacheDir: File,
+    private val configValidator: (String) -> String
+) {
+    private val profilesRoot = File(filesDir, "profiles").apply { mkdirs() }
+    private val metaFile = File(filesDir, "vpn233/profiles.json")
     private val lock = Any()
 
     private val _profiles = MutableStateFlow<List<ProfileItem>>(emptyList())
@@ -121,7 +136,11 @@ class ProfileRepository(private val context: Context) {
         }
         val tmp = File(metaFile.parentFile, "profiles.json.tmp")
         tmp.writeText(root.toString(2), Charsets.UTF_8)
-        tmp.renameTo(metaFile)
+        java.nio.file.Files.move(
+            tmp.toPath(),
+            metaFile.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+        )
     }
 
     fun setAutoUpdateMinutes(id: String, minutes: Int) {
@@ -133,16 +152,24 @@ class ProfileRepository(private val context: Context) {
         }
     }
 
-    fun findByIdOrName(idOrName: String): ProfileItem? {
-        return _profiles.value.firstOrNull { it.id == idOrName || it.name == idOrName }
+    fun findByIdOrName(idOrName: String): ProfileItem? =
+        _profiles.value.firstOrNull { it.id == idOrName || it.name == idOrName }
+
+    fun findByUrl(url: String): ProfileItem? {
+        val trimmed = url.trim()
+        if (trimmed.isEmpty()) return null
+        return _profiles.value.firstOrNull { it.sourceType == ProfileSourceType.URL && it.url.trim() == trimmed }
     }
 
-    fun setActiveProfile(id: String) {
+    fun setActiveProfile(id: String): Boolean {
         synchronized(lock) {
+            if (_activeProfileId.value == id) return false
             if (_profiles.value.any { it.id == id }) {
                 _activeProfileId.value = id
                 saveMeta()
+                return true
             }
+            return false
         }
     }
 
@@ -169,159 +196,182 @@ class ProfileRepository(private val context: Context) {
         }
     }
 
-    suspend fun saveYamlContent(
+    private fun resolveMatchedProfile(
+        explicitId: String?,
+        name: String,
+        sourceType: ProfileSourceType,
+        url: String,
+        normalizedHash: String
+    ): ProfileItem? {
+        val current = _profiles.value
+        if (!explicitId.isNullOrBlank()) {
+            return current.firstOrNull { it.id == explicitId }
+        }
+        val trimmedUrl = url.trim()
+        if (trimmedUrl.isNotEmpty()) {
+            current.firstOrNull { it.url.trim() == trimmedUrl }?.let { return it }
+        }
+        val trimmedName = name.trim()
+        if (trimmedName.isNotEmpty() && trimmedName !in GENERIC_IMPORT_NAMES) {
+            current.firstOrNull { it.name == trimmedName && it.sourceType == sourceType }?.let { return it }
+        }
+        return current.firstOrNull { p ->
+            val disk = readProfileYaml(p.id)
+            disk.isNotEmpty() && sha256Hex(disk) == normalizedHash
+        }
+    }
+
+    private fun disambiguateGenericName(desired: String): String {
+        val base = desired.ifBlank { "配置" }
+        val existingNames = _profiles.value.map { it.name }.toSet()
+        if (base !in existingNames) return base
+        var idx = 2
+        while ("$base ($idx)" in existingNames) {
+            idx++
+        }
+        return "$base ($idx)"
+    }
+
+    fun saveYamlContentWithResult(
         id: String?,
         name: String,
         yamlContent: String,
         sourceType: ProfileSourceType = ProfileSourceType.LOCAL,
         url: String = ""
-    ): Result<ProfileItem> = withContext(Dispatchers.IO) {
-        runCatching {
-            val targetId = id ?: UUID.randomUUID().toString()
-            val stageDir = File(context.cacheDir, "stage_$targetId").apply {
-                deleteRecursively()
-                mkdirs()
+    ): Result<ProfileSaveResult> = runCatching {
+        val normalizedYaml = SubscriptionParser.normalizeToClashYaml(yamlContent)
+        val newHash = sha256Hex(normalizedYaml)
+        val matched = synchronized(lock) {
+            resolveMatchedProfile(id, name, sourceType, url, newHash)
+        }
+        val targetId = matched?.id ?: id ?: UUID.randomUUID().toString()
+        val stageDir = File(cacheDir, "stage_$targetId").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        try {
+            File(stageDir, "config.yaml").writeText(normalizedYaml, Charsets.UTF_8)
+            val err = configValidator(stageDir.absolutePath)
+            if (err.isNotBlank()) {
+                throw IllegalArgumentException("配置校验失败: $err")
             }
-            try {
-                val normalizedYaml = SubscriptionParser.normalizeToClashYaml(yamlContent)
-                File(stageDir, "config.yaml").writeText(normalizedYaml, Charsets.UTF_8)
-                val err = MihomoBridge.validateConfig(stageDir.absolutePath)
-                if (err.isNotBlank()) {
-                    throw IllegalArgumentException("配置校验失败: $err")
-                }
-                val destDir = getProfileDir(targetId)
+            val prevYaml = if (matched != null) readProfileYaml(matched.id) else ""
+            val contentChanged = matched == null || sha256Hex(prevYaml) != newHash
+            val destDir = getProfileDir(targetId)
+            if (contentChanged || !File(destDir, "config.yaml").exists()) {
                 File(destDir, "config.yaml").writeText(normalizedYaml, Charsets.UTF_8)
-                val existing = _profiles.value.firstOrNull { it.id == targetId }
-                val item = (existing ?: ProfileItem(
-                    id = targetId,
-                    name = name.ifBlank { "配置 ${(_profiles.value.size + 1)}" },
-                    sourceType = sourceType,
-                    url = url
-                )).copy(
-                    name = name.ifBlank { existing?.name ?: "配置" },
-                    updatedAt = System.currentTimeMillis()
-                )
-                synchronized(lock) {
-                    val list = _profiles.value.toMutableList()
-                    val idx = list.indexOfFirst { it.id == targetId }
-                    if (idx >= 0) list[idx] = item else list.add(0, item)
-                    _profiles.value = list
-                    if (_activeProfileId.value == null) {
-                        _activeProfileId.value = item.id
-                    }
-                    saveMeta()
-                }
-                item
-            } finally {
-                stageDir.deleteRecursively()
             }
+            val resolvedName = when {
+                name.isNotBlank() && matched != null -> name.trim()
+                matched != null -> matched.name
+                name.isNotBlank() -> disambiguateGenericName(name.trim())
+                else -> disambiguateGenericName("配置")
+            }
+            val item = (matched ?: ProfileItem(
+                id = targetId,
+                name = resolvedName,
+                sourceType = sourceType,
+                url = url.trim()
+            )).copy(
+                name = resolvedName,
+                url = url.trim().ifBlank { matched?.url ?: "" },
+                updatedAt = System.currentTimeMillis()
+            )
+            synchronized(lock) {
+                val list = _profiles.value.toMutableList()
+                val idx = list.indexOfFirst { it.id == targetId }
+                if (idx >= 0) list[idx] = item else list.add(0, item)
+                _profiles.value = list
+                if (_activeProfileId.value == null) {
+                    _activeProfileId.value = item.id
+                }
+                saveMeta()
+            }
+            ProfileSaveResult(item = item, created = matched == null, contentChanged = contentChanged)
+        } finally {
+            stageDir.deleteRecursively()
         }
     }
 
-    suspend fun importFromUrl(
-        rawUrl: String,
-        customName: String = "",
-        existingId: String? = null
-    ): Result<ProfileItem> = withContext(Dispatchers.IO) {
-        runCatching {
-            val trimmedUrl = rawUrl.trim()
-            require(trimmedUrl.startsWith("http://", true) || trimmedUrl.startsWith("https://", true)) {
-                "仅支持 http:// 或 https:// 订阅链接"
+    fun upsertUrlPayload(
+        trimmedUrl: String,
+        resolvedName: String,
+        body: String,
+        existing: ProfileItem?,
+        updateHours: Int,
+        uploadBytes: Long,
+        downloadBytes: Long,
+        totalBytes: Long,
+        expireEpochSec: Long
+    ): ProfileSaveResult {
+        val targetId = existing?.id ?: UUID.randomUUID().toString()
+        val normalizedYaml = SubscriptionParser.normalizeToClashYaml(body)
+        val newHash = sha256Hex(normalizedYaml)
+        val stageDir = File(cacheDir, "stage_$targetId").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        try {
+            File(stageDir, "config.yaml").writeText(normalizedYaml, Charsets.UTF_8)
+            val err = configValidator(stageDir.absolutePath)
+            if (err.isNotBlank()) {
+                throw IllegalArgumentException("订阅校验失败: $err")
             }
-            val conn = (URL(trimmedUrl).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15_000
-                readTimeout = 25_000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "ClashMetaForAndroid/2.11.16.Meta")
-            }
-            val code = conn.responseCode
-            if (code !in 200..299) {
-                throw IllegalStateException("服务器返回 HTTP $code")
-            }
-            val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            if (body.isBlank()) throw IllegalStateException("订阅内容为空")
-
-            val userInfo = parseUserInfo(conn.getHeaderField("Subscription-Userinfo"))
-            val updateHours = conn.getHeaderField("Profile-Update-Interval")?.trim()?.toIntOrNull() ?: 0
-            val headerName = parseContentDispositionName(conn.getHeaderField("Content-Disposition"))
-            val urlHostName = runCatching { URL(trimmedUrl).host }.getOrDefault("订阅配置")
-            val existing = existingId?.let { eid -> _profiles.value.firstOrNull { it.id == eid } }
-            val resolvedName = customName.trim().ifBlank {
-                existing?.name ?: headerName?.ifBlank { null } ?: urlHostName
-            }
-
-            val id = existingId ?: UUID.randomUUID().toString()
-            val stageDir = File(context.cacheDir, "stage_$id").apply {
-                deleteRecursively()
-                mkdirs()
-            }
-            try {
-                val normalizedYaml = SubscriptionParser.normalizeToClashYaml(body)
-                File(stageDir, "config.yaml").writeText(normalizedYaml, Charsets.UTF_8)
-                val err = MihomoBridge.validateConfig(stageDir.absolutePath)
-                if (err.isNotBlank()) {
-                    throw IllegalArgumentException("订阅校验失败: $err")
-                }
-                val destDir = getProfileDir(id)
+            val prevYaml = if (existing != null) readProfileYaml(existing.id) else ""
+            val contentChanged = existing == null || sha256Hex(prevYaml) != newHash
+            val destDir = getProfileDir(targetId)
+            if (contentChanged || !File(destDir, "config.yaml").exists()) {
                 File(destDir, "config.yaml").writeText(normalizedYaml, Charsets.UTF_8)
-                val item = ProfileItem(
-                    id = id,
-                    name = resolvedName,
-                    sourceType = ProfileSourceType.URL,
-                    url = trimmedUrl,
-                    updatedAt = System.currentTimeMillis(),
-                    autoUpdateMinutes = if (updateHours > 0) updateHours * 60 else (existing?.autoUpdateMinutes ?: 0),
-                    uploadBytes = userInfo.upload,
-                    downloadBytes = userInfo.download,
-                    totalBytes = userInfo.total,
-                    expireEpochSec = userInfo.expire
-                )
-                synchronized(lock) {
-                    val list = _profiles.value.toMutableList()
-                    val idx = list.indexOfFirst { it.id == id }
-                    if (idx >= 0) list[idx] = item else list.add(0, item)
-                    _profiles.value = list
-                    if (_activeProfileId.value == null) {
-                        _activeProfileId.value = item.id
-                    }
-                    saveMeta()
-                }
-                item
-            } finally {
-                stageDir.deleteRecursively()
             }
+            val item = ProfileItem(
+                id = targetId,
+                name = resolvedName,
+                sourceType = ProfileSourceType.URL,
+                url = trimmedUrl,
+                updatedAt = System.currentTimeMillis(),
+                autoUpdateMinutes = if (updateHours > 0) updateHours * 60 else (existing?.autoUpdateMinutes ?: 0),
+                uploadBytes = uploadBytes,
+                downloadBytes = downloadBytes,
+                totalBytes = totalBytes,
+                expireEpochSec = expireEpochSec
+            )
+            synchronized(lock) {
+                val list = _profiles.value.toMutableList()
+                val idx = list.indexOfFirst { it.id == targetId }
+                if (idx >= 0) list[idx] = item else list.add(0, item)
+                _profiles.value = list
+                if (_activeProfileId.value == null) {
+                    _activeProfileId.value = item.id
+                }
+                saveMeta()
+            }
+            return ProfileSaveResult(item = item, created = existing == null, contentChanged = contentChanged)
+        } finally {
+            stageDir.deleteRecursively()
         }
     }
 
-    suspend fun importFromUri(uri: Uri): Result<List<ProfileItem>> = withContext(Dispatchers.IO) {
-        runCatching {
-            val fileName = queryDisplayName(uri) ?: "imported.yaml"
-            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: throw IllegalStateException("无法读取所选文件")
-            importBytes(bytes, fileName)
-        }
-    }
-
-    suspend fun importBytes(bytes: ByteArray, fileName: String): List<ProfileItem> = withContext(Dispatchers.IO) {
+    fun importBytesWithResult(bytes: ByteArray, fileName: String): List<ProfileSaveResult> {
         val lower = fileName.lowercase()
         val isZip = lower.endsWith(".cba") || lower.endsWith(".zip") ||
             (bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte())
-        if (isZip) {
-            importArchive(ByteArrayInputStream(bytes))
+        return if (isZip) {
+            importArchiveWithResult(ByteArrayInputStream(bytes))
         } else {
             val text = bytes.toString(Charsets.UTF_8)
             val baseName = fileName.substringBeforeLast('.').ifBlank { "导入配置" }
-            val item = saveYamlContent(
-                id = null,
-                name = baseName,
-                yamlContent = text,
-                sourceType = ProfileSourceType.FILE_IMPORT
-            ).getOrThrow()
-            listOf(item)
+            listOf(
+                saveYamlContentWithResult(
+                    id = null,
+                    name = baseName,
+                    yamlContent = text,
+                    sourceType = ProfileSourceType.FILE_IMPORT
+                ).getOrThrow()
+            )
         }
     }
 
-    private suspend fun importArchive(input: InputStream): List<ProfileItem> {
+    private fun importArchiveWithResult(input: InputStream): List<ProfileSaveResult> {
         val entries = LinkedHashMap<String, ByteArray>()
         ZipInputStream(input).use { zis ->
             var entry: ZipEntry? = zis.nextEntry
@@ -333,8 +383,7 @@ class ProfileRepository(private val context: Context) {
                 entry = zis.nextEntry
             }
         }
-        val imported = mutableListOf<ProfileItem>()
-        // Support Clash Meta .cba or generic zip backups containing config.yaml / *.yaml
+        val imported = mutableListOf<ProfileSaveResult>()
         val yamlEntries = entries.entries.filter { (path, _) ->
             val p = path.lowercase()
             !p.contains("/providers/") && (p.endsWith(".yaml") || p.endsWith(".yml"))
@@ -348,18 +397,17 @@ class ProfileRepository(private val context: Context) {
             }
             val candidateUrl = meta?.second ?: ""
             val yamlStr = data.toString(Charsets.UTF_8)
-            val res = saveYamlContent(
+            val res = saveYamlContentWithResult(
                 id = null,
                 name = candidateName.ifBlank { "导入配置" },
                 yamlContent = yamlStr,
                 sourceType = if (candidateUrl.isNotBlank()) ProfileSourceType.URL else ProfileSourceType.FILE_IMPORT,
                 url = candidateUrl
             )
-            res.getOrNull()?.let { item ->
-                // Copy matching providers folder if present in archive
+            res.getOrNull()?.let { saved ->
                 val prefix = path.substringBeforeLast('/', "")
                 if (prefix.isNotEmpty()) {
-                    val pDir = getProfileDir(item.id)
+                    val pDir = getProfileDir(saved.item.id)
                     entries.forEach { (ep, ed) ->
                         if (ep.startsWith("$prefix/providers/")) {
                             val rel = ep.removePrefix("$prefix/")
@@ -369,7 +417,7 @@ class ProfileRepository(private val context: Context) {
                         }
                     }
                 }
-                imported.add(item)
+                imported.add(saved)
             }
         }
         if (imported.isEmpty()) {
@@ -398,30 +446,8 @@ class ProfileRepository(private val context: Context) {
         return map
     }
 
-    suspend fun scanDropInImports(): List<ProfileItem> = withContext(Dispatchers.IO) {
-        val dropDir = context.getExternalFilesDir("import") ?: return@withContext emptyList()
-        if (!dropDir.exists()) {
-            dropDir.mkdirs()
-            return@withContext emptyList()
-        }
-        val files = dropDir.listFiles()?.filter {
-            it.isFile && (it.name.endsWith(".yaml", true) ||
-                it.name.endsWith(".yml", true) ||
-                it.name.endsWith(".zip", true))
-        }.orEmpty()
-        val imported = mutableListOf<ProfileItem>()
-        for (f in files) {
-            runCatching {
-                val list = importBytes(f.readBytes(), f.name)
-                imported.addAll(list)
-                f.delete()
-            }
-        }
-        imported
-    }
-
     fun exportAllBackupZip(): File {
-        val outDir = File(context.cacheDir, "exports").apply { mkdirs() }
+        val outDir = File(cacheDir, "exports").apply { mkdirs() }
         val outFile = File(outDir, "vpn233-backup.zip")
         ZipOutputStream(outFile.outputStream()).use { zos ->
             if (metaFile.exists()) {
@@ -439,6 +465,140 @@ class ProfileRepository(private val context: Context) {
             }
         }
         return outFile
+    }
+
+    companion object {
+        private val GENERIC_IMPORT_NAMES = setOf("剪贴板配置", "ADB导入配置", "导入配置", "配置", "未命名配置")
+
+        internal fun sha256Hex(text: String): String {
+            val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
+            return digest.joinToString("") { "%02x".format(it) }
+        }
+    }
+}
+
+class ProfileRepository(private val context: Context) {
+    private val storage = ProfileStorageEngine(context.filesDir, context.cacheDir) { dir ->
+        MihomoBridge.validateConfig(dir)
+    }
+
+    val profiles: StateFlow<List<ProfileItem>> = storage.profiles
+    val activeProfileId: StateFlow<String?> = storage.activeProfileId
+
+    fun getProfileDir(id: String): File = storage.getProfileDir(id)
+    fun getActiveProfileDir(): File? = storage.getActiveProfileDir()
+    fun getActiveProfile(): ProfileItem? = storage.getActiveProfile()
+    fun readProfileYaml(id: String): String = storage.readProfileYaml(id)
+    fun setAutoUpdateMinutes(id: String, minutes: Int) = storage.setAutoUpdateMinutes(id, minutes)
+    fun findByIdOrName(idOrName: String): ProfileItem? = storage.findByIdOrName(idOrName)
+    fun setActiveProfile(id: String): Boolean = storage.setActiveProfile(id)
+    fun renameProfile(id: String, newName: String) = storage.renameProfile(id, newName)
+    fun deleteProfile(id: String) = storage.deleteProfile(id)
+    fun exportAllBackupZip(): File = storage.exportAllBackupZip()
+
+    suspend fun saveYamlContentWithResult(
+        id: String?,
+        name: String,
+        yamlContent: String,
+        sourceType: ProfileSourceType = ProfileSourceType.LOCAL,
+        url: String = ""
+    ): Result<ProfileSaveResult> = withContext(Dispatchers.IO) {
+        storage.saveYamlContentWithResult(id, name, yamlContent, sourceType, url)
+    }
+
+    suspend fun saveYamlContent(
+        id: String?,
+        name: String,
+        yamlContent: String,
+        sourceType: ProfileSourceType = ProfileSourceType.LOCAL,
+        url: String = ""
+    ): Result<ProfileItem> = saveYamlContentWithResult(id, name, yamlContent, sourceType, url).map { it.item }
+
+    suspend fun importFromUrlWithResult(
+        rawUrl: String,
+        customName: String = "",
+        existingId: String? = null
+    ): Result<ProfileSaveResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val trimmedUrl = rawUrl.trim()
+            require(trimmedUrl.startsWith("http://", true) || trimmedUrl.startsWith("https://", true)) {
+                "仅支持 http:// 或 https:// 订阅链接"
+            }
+            val conn = (URL(trimmedUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 25_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "vpn233/1.1 clash-verge/2.0 mihomo/1.19")
+            }
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                throw IllegalStateException("服务器返回 HTTP $code")
+            }
+            val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            if (body.isBlank()) throw IllegalStateException("订阅内容为空")
+
+            val userInfo = parseUserInfo(conn.getHeaderField("Subscription-Userinfo"))
+            val updateHours = conn.getHeaderField("Profile-Update-Interval")?.trim()?.toIntOrNull() ?: 0
+            val headerName = parseContentDispositionName(conn.getHeaderField("Content-Disposition"))
+            val urlHostName = runCatching { URL(trimmedUrl).host }.getOrDefault("订阅配置")
+            val existing = existingId?.let { eid -> profiles.value.firstOrNull { it.id == eid } }
+                ?: storage.findByUrl(trimmedUrl)
+            val resolvedName = customName.trim().ifBlank {
+                existing?.name ?: headerName?.ifBlank { null } ?: urlHostName
+            }
+
+            storage.upsertUrlPayload(
+                trimmedUrl = trimmedUrl,
+                resolvedName = resolvedName,
+                body = body,
+                existing = existing,
+                updateHours = updateHours,
+                uploadBytes = userInfo.upload,
+                downloadBytes = userInfo.download,
+                totalBytes = userInfo.total,
+                expireEpochSec = userInfo.expire
+            )
+        }
+    }
+
+    suspend fun importFromUrl(
+        rawUrl: String,
+        customName: String = "",
+        existingId: String? = null
+    ): Result<ProfileItem> = importFromUrlWithResult(rawUrl, customName, existingId).map { it.item }
+
+    suspend fun importFromUriWithResult(uri: Uri): Result<List<ProfileSaveResult>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val fileName = queryDisplayName(uri) ?: "imported.yaml"
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: throw IllegalStateException("无法读取所选文件")
+            storage.importBytesWithResult(bytes, fileName)
+        }
+    }
+
+    suspend fun importFromUri(uri: Uri): Result<List<ProfileItem>> =
+        importFromUriWithResult(uri).map { list -> list.map { it.item } }
+
+    suspend fun scanDropInImports(): List<ProfileItem> = withContext(Dispatchers.IO) {
+        val dropDir = context.getExternalFilesDir("import") ?: return@withContext emptyList()
+        if (!dropDir.exists()) {
+            dropDir.mkdirs()
+            return@withContext emptyList()
+        }
+        val files = dropDir.listFiles()?.filter {
+            it.isFile && (it.name.endsWith(".yaml", true) ||
+                it.name.endsWith(".yml", true) ||
+                it.name.endsWith(".zip", true))
+        }.orEmpty()
+        val imported = mutableListOf<ProfileItem>()
+        for (f in files) {
+            runCatching {
+                val list = storage.importBytesWithResult(f.readBytes(), f.name).map { it.item }
+                imported.addAll(list)
+                f.delete()
+            }
+        }
+        imported
     }
 
     private fun queryDisplayName(uri: Uri): String? {

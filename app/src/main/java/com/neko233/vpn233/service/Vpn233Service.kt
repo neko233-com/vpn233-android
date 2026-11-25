@@ -40,10 +40,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.TimeZone
 
 class Vpn233Service : VpnService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lifecycleMutex = Mutex()
+    @Volatile
+    private var pendingReload = false
     private var tunPfd: ParcelFileDescriptor? = null
     private var monitorJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -87,23 +92,40 @@ class Vpn233Service : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                stopVpnInternal()
+                pendingReload = false
+                serviceScope.launch { stopVpnInternal() }
                 return START_NOT_STICKY
             }
             ACTION_RELOAD -> {
-                serviceScope.launch { startOrReloadVpn() }
+                triggerStartOrReload()
                 return START_STICKY
             }
             ACTION_REFRESH_MONITOR -> {
                 if (_status.value == VpnStatus.RUNNING) {
+                    pushStaticOrRateNotification(_traffic.value, force = true)
                     ensureMonitorLoop()
                 }
                 return START_STICKY
             }
             else -> {
                 postForegroundNotification("vpn233 正在启动...", "准备核心配置")
-                serviceScope.launch { startOrReloadVpn() }
+                triggerStartOrReload()
                 return START_STICKY
+            }
+        }
+    }
+
+    private fun triggerStartOrReload() {
+        if (lifecycleMutex.isLocked) {
+            pendingReload = true
+            return
+        }
+        serviceScope.launch {
+            lifecycleMutex.withLock {
+                do {
+                    pendingReload = false
+                    startOrReloadVpnLocked()
+                } while (pendingReload)
             }
         }
     }
@@ -116,8 +138,7 @@ class Vpn233Service : VpnService() {
         super.onTaskRemoved(rootIntent)
     }
 
-    private suspend fun startOrReloadVpn() {
-        if (_status.value == VpnStatus.STARTING || _status.value == VpnStatus.STOPPING) return
+    private suspend fun startOrReloadVpnLocked() {
         _status.value = VpnStatus.STARTING
         _lastError.value = null
         requestTileUpdate()
@@ -138,6 +159,8 @@ class Vpn233Service : VpnService() {
             app.geoDatabaseManager.ensureBootstrapAssets()
             MihomoBridge.setLogLevel(settings.logLevel)
 
+            // Tear down all prior connections before swapping profiles or node/TUN settings
+            runCatching { MihomoBridge.closeAllConnections() }
             closeTunOnly()
             MihomoBridge.stopMixed()
 
@@ -253,7 +276,7 @@ class Vpn233Service : VpnService() {
             ensureMonitorLoop()
         } catch (t: Throwable) {
             _lastError.value = t.message ?: "启动失败"
-            stopVpnInternal()
+            stopVpnLocked()
         }
     }
 
@@ -306,7 +329,14 @@ class Vpn233Service : VpnService() {
         }
     }
 
-    private fun stopVpnInternal() {
+    private suspend fun stopVpnInternal() {
+        lifecycleMutex.withLock {
+            pendingReload = false
+            stopVpnLocked()
+        }
+    }
+
+    private fun stopVpnLocked() {
         _status.value = VpnStatus.STOPPING
         stopMonitorLoop()
         unregisterPhysicalNetworkDnsCallback()
@@ -337,11 +367,17 @@ class Vpn233Service : VpnService() {
             .build()
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                pushDns(cm.getLinkProperties(network))
+                val caps = cm.getNetworkCapabilities(network)
+                if (caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                    pushDns(cm.getLinkProperties(network))
+                }
             }
 
             override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
-                pushDns(linkProperties)
+                val caps = cm.getNetworkCapabilities(network)
+                if (caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                    pushDns(linkProperties)
+                }
             }
 
             override fun onLost(network: Network) {
@@ -392,7 +428,8 @@ class Vpn233Service : VpnService() {
     }
 
     override fun onRevoke() {
-        stopVpnInternal()
+        pendingReload = false
+        serviceScope.launch { stopVpnInternal() }
         super.onRevoke()
     }
 
@@ -542,6 +579,13 @@ class Vpn233Service : VpnService() {
             val s = Vpn233Application.instance.settingsStore.settings.value
             val (_, groups) = MihomoBridge.queryGroups(s.delayTestUrl)
             _currentNodeName.value = groups.firstOrNull()?.now.orEmpty()
+        }
+
+        fun refreshNotification(context: Context) {
+            if (_status.value == VpnStatus.RUNNING) {
+                val intent = Intent(context, Vpn233Service::class.java).setAction(ACTION_REFRESH_MONITOR)
+                runCatching { context.startService(intent) }
+            }
         }
 
         fun start(context: Context) {
