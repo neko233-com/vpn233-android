@@ -18,11 +18,12 @@ A sleek, ultra-low-power, high-performance **arm64-v8a** Android proxy client wr
   - R8 full minification, resource shrinking, `zh`/`en` locale filtering, and custom `ImageVector` icons (no `material-icons-extended` bloat).
   - Lightweight bootstrap `geoip.metadb` + `geosite.dat` (`~246 KB` compressed in APK) with 1-tap online upgrade to full GeoIP / GeoSite / ASN databases via jsDelivr.
 - **Full Protocol, Subscription & Scenario Support**:
-  - Imports standard Clash / Mihomo YAML subscriptions (parses `Subscription-Userinfo`, `Profile-Update-Interval`, `Content-Disposition`), Base64 proxy lists, and share links (`vmess://`, `vless://`, `trojan://`, `ss://`, `hy2://`, `hysteria2://`, `tuic://`, `socks5://`).
+  - Imports standard Clash / Mihomo YAML subscriptions (parses `Subscription-Userinfo`, `Profile-Update-Interval`, `Content-Disposition`), Base64 proxy lists, and share links (`vmess://`, `vless://`, `trojan://`, `ss://`, `hy2://`, `hysteria2://`, `tuic://`, `socks5://`) with **idempotent deduplication** (repeated URL, file, ZIP, clipboard, or ADB imports update in-place without duplicates or needless tunnel resets).
+  - Hot-switching active profiles (`activate_profile` / UI), switching proxy nodes (e.g. Korea → USA), or changing routing mode automatically **closes all previous active connections** so no stale sockets remain pinned to the prior route.
   - Built-in YAML editor with live core validation, batch subscription update, and `.zip` full backup export.
   - Supports **Rule / Global / Direct** live mode switching, **Allow LAN** sharing (`0.0.0.0:<port>`), **IPv6** dual-stack, **Per-App Proxy** (allowlist/denylist with app icon search), **DNS Hijack**, **Sniffer**, **FakeIP**, and **Proxy/Rule Providers**.
 - **Interactive Rule Editor & Live Connection Actions**:
-  - Visual rule builder supporting `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-REGEX`, `IP-CIDR`, `IP-CIDR6`, `GEOIP`, `GEOSITE`, `IP-ASN`, `DST-PORT`, `PROCESS-NAME`, and raw `AND`/`OR`/`SUB-RULE` expressions with `no-resolve`, ordering (`PREPEND` or `BEFORE_MATCH`), toggle switches, and live hot-reload.
+  - Visual rule builder supporting `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-REGEX`, `IP-CIDR`, `IP-CIDR6`, `SRC-IP-CIDR`, `GEOIP`, `GEOSITE`, `IP-ASN`, `DST-PORT`, `SRC-PORT`, `NETWORK`, `PROCESS-NAME`, `PROCESS-PATH`, `RULE-SET`, and raw `AND`/`OR`/`SUB-RULE`/`MATCH` expressions with `no-resolve`, ordering (`PREPEND` or `BEFORE_MATCH`), toggle switches, and live hot-reload.
   - Inspect all active core rules and create rules with 1 tap directly from any entry in **Active Connections**.
 
 ---
@@ -33,6 +34,9 @@ A sleek, ultra-low-power, high-performance **arm64-v8a** Android proxy client wr
 For security, caller UID is strictly verified (`Process.SHELL_UID` / `ROOT_UID` / self UID only — third-party apps cannot invoke it).
 
 ```bash
+# Optional on Chinese OEM ROMs (ColorOS/MIUI/OriginOS): if stopped & frozen while screen-off, wake once:
+# adb shell am start -n com.neko233.vpn233/.MainActivity
+
 # Check status, traffic, mode, profile & battery whitelist state
 adb shell content call --uri content://com.neko233.vpn233.agent --method status
 
@@ -50,20 +54,32 @@ adb shell content call --uri content://com.neko233.vpn233.agent --method reload
 # Switch routing mode (rule | global | direct)
 adb shell content call --uri content://com.neko233.vpn233.agent --method set_mode --arg rule
 
-# Query proxy groups, test delays, and switch node
+# Query proxy groups, test delays, and switch node (automatically closes previous active connections)
 adb shell content call --uri content://com.neko233.vpn233.agent --method list_groups
 adb shell content call --uri content://com.neko233.vpn233.agent --method test_group --arg PROXY
-adb shell content call --uri content://com.neko233.vpn233.agent --method select_proxy --arg PROXY --extra proxy:s:HK-01
+adb shell content call --uri content://com.neko233.vpn233.agent --method test_proxy --arg US-01
+adb shell content call --uri content://com.neko233.vpn233.agent --method select_proxy --arg PROXY --extra proxy:s:US-01
 
-# Manage rules dynamically (hot-reloads running core)
+# Hot-switch profile (closes all previous connections and reloads) / update / rename / export
+adb shell content call --uri content://com.neko233.vpn233.agent --method activate_profile --arg MySub
+adb shell content call --uri content://com.neko233.vpn233.agent --method update_profile --arg MySub
+adb shell content call --uri content://com.neko233.vpn233.agent --method export_backup
+
+# Manage rules dynamically (hot-reloads running core & resets old connections)
 adb shell content call --uri content://com.neko233.vpn233.agent --method list_rules
 adb shell content call --uri content://com.neko233.vpn233.agent --method add_rule --arg "DOMAIN-SUFFIX,openai.com,PROXY" --extra position:s:PREPEND
+adb shell content call --uri content://com.neko233.vpn233.agent --method update_rule --arg 0 --extra rule:s:DOMAIN-SUFFIX,openai.com,DIRECT --extra position:s:BEFORE_MATCH
+adb shell content call --uri content://com.neko233.vpn233.agent --method move_rule --arg 1 --extra to:i:0
 adb shell content call --uri content://com.neko233.vpn233.agent --method toggle_rule --arg 0 --extra enabled:b:false
 adb shell content call --uri content://com.neko233.vpn233.agent --method remove_rule --arg 0
+adb shell content call --uri content://com.neko233.vpn233.agent --method clear_rules
 
-# Inspect active connections, logs & settings
+# Providers, active connections, logs, GC & settings
+adb shell content call --uri content://com.neko233.vpn233.agent --method list_providers
 adb shell content call --uri content://com.neko233.vpn233.agent --method connections
+adb shell content call --uri content://com.neko233.vpn233.agent --method close_all_connections
 adb shell content call --uri content://com.neko233.vpn233.agent --method logs
+adb shell content call --uri content://com.neko233.vpn233.agent --method force_gc
 adb shell content call --uri content://com.neko233.vpn233.agent --method set_setting --arg allowLan --extra value:s:true
 
 # Jump directly to a UI tab or Rules dialog

@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
@@ -62,13 +63,38 @@ private val RULE_TYPES = listOf(
     "DOMAIN-REGEX",
     "IP-CIDR",
     "IP-CIDR6",
+    "SRC-IP-CIDR",
     "GEOIP",
     "GEOSITE",
     "IP-ASN",
     "DST-PORT",
+    "SRC-PORT",
+    "NETWORK",
     "PROCESS-NAME",
+    "PROCESS-PATH",
+    "RULE-SET",
     "RAW"
 )
+
+private fun payloadHintForRuleType(type: String): String = when (type) {
+    "DOMAIN-SUFFIX" -> "域名后缀 (例如 openai.com)"
+    "DOMAIN" -> "精确域名 (例如 api.github.com)"
+    "DOMAIN-KEYWORD" -> "域名关键字 (例如 google)"
+    "DOMAIN-REGEX" -> "域名正则表达式"
+    "IP-CIDR" -> "IPv4 CIDR (例如 192.168.0.0/16)"
+    "IP-CIDR6" -> "IPv6 CIDR (例如 fc00::/7)"
+    "SRC-IP-CIDR" -> "来源局域网 IP CIDR (例如 192.168.1.50/32)"
+    "GEOIP" -> "国家代码 (例如 CN, US)"
+    "GEOSITE" -> "GeoSite 集合 (例如 cn, category-ads-all)"
+    "IP-ASN" -> "自治系统号 (例如 13335)"
+    "DST-PORT" -> "目标端口或范围 (例如 443 或 8000-9000)"
+    "SRC-PORT" -> "来源端口 (例如 5353)"
+    "NETWORK" -> "传输协议 (tcp 或 udp)"
+    "PROCESS-NAME" -> "应用包名 / 进程名 (例如 com.android.chrome)"
+    "PROCESS-PATH" -> "可执行文件路径关键字"
+    "RULE-SET" -> "外部 Rule-Provider 名称"
+    else -> "匹配值"
+}
 
 @Composable
 fun RulesDialog(
@@ -89,7 +115,7 @@ fun RulesDialog(
     var editingEntry by remember { mutableStateOf<CustomRuleEntry?>(null) }
     var showCreateDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(tab) {
+    LaunchedEffect(tab, customRules) {
         if (tab == 1) onRefreshActiveRules()
     }
 
@@ -396,10 +422,14 @@ private fun RuleEditorDialog(
 ) {
     val p = LocalVpnPalette.current
     val initialParts = initialRuleLine.split(',')
-    val initType = initialParts.firstOrNull()?.uppercase()?.takeIf { it in RULE_TYPES } ?: if (initialRuleLine.startsWith("MATCH", true)) "RAW" else "DOMAIN-SUFFIX"
-    val initPayload = if (initType != "RAW" && initialParts.size >= 2) initialParts[1] else ""
-    val initTarget = if (initType != "RAW" && initialParts.size >= 3) initialParts[2] else "PROXY"
-    val initNoResolve = initialParts.any { it.equals("no-resolve", true) }
+    val firstToken = initialParts.firstOrNull()?.trim()?.uppercase().orEmpty()
+    val initType = when {
+        firstToken in RULE_TYPES && firstToken != "RAW" -> firstToken
+        else -> "RAW"
+    }
+    val initPayload = if (initType != "RAW" && initialParts.size >= 2) initialParts[1].trim() else ""
+    val initTarget = if (initType != "RAW" && initialParts.size >= 3) initialParts[2].trim() else "PROXY"
+    val initNoResolve = initialParts.any { it.trim().equals("no-resolve", true) }
 
     var selectedType by remember { mutableStateOf(initType) }
     var payload by remember { mutableStateOf(initPayload) }
@@ -412,12 +442,13 @@ private fun RuleEditorDialog(
         (listOf("PROXY", "DIRECT", "REJECT") + groupNames).distinct()
     }
 
+    val noResolveCapable = selectedType in listOf("IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR", "GEOIP", "IP-ASN")
     val composedRule = if (selectedType == "RAW") {
         rawLine.trim()
     } else {
         buildString {
             append(selectedType).append(',').append(payload.trim()).append(',').append(target.trim())
-            if (noResolve && selectedType in listOf("IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN")) {
+            if (noResolve && noResolveCapable) {
                 append(",no-resolve")
             }
         }
@@ -428,7 +459,10 @@ private fun RuleEditorDialog(
         containerColor = p.card,
         title = { Text("编辑分流规则", color = p.textPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 Text("规则类型", color = p.textSecondary, fontSize = 11.sp)
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -437,7 +471,12 @@ private fun RuleEditorDialog(
                     RULE_TYPES.forEach { t ->
                         val sel = selectedType == t
                         Surface(
-                            onClick = { selectedType = t },
+                            onClick = {
+                                if (t == "RAW" && selectedType != "RAW" && payload.isNotBlank()) {
+                                    rawLine = composedRule
+                                }
+                                selectedType = t
+                            },
                             shape = RoundedCornerShape(8.dp),
                             color = if (sel) p.accent else p.cardElevated
                         ) {
@@ -455,7 +494,7 @@ private fun RuleEditorDialog(
                     OutlinedTextField(
                         value = rawLine,
                         onValueChange = { rawLine = it },
-                        label = { Text("完整规则表达式 (支持 AND/OR/SUB-RULE)") },
+                        label = { Text("完整规则表达式 (支持 AND/OR/SUB-RULE/MATCH)") },
                         singleLine = true,
                         textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
                         modifier = Modifier.fillMaxWidth()
@@ -464,7 +503,7 @@ private fun RuleEditorDialog(
                     OutlinedTextField(
                         value = payload,
                         onValueChange = { payload = it },
-                        label = { Text("匹配值 (域名 / CIDR / CN / 端口 / 包名)") },
+                        label = { Text(payloadHintForRuleType(selectedType)) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -489,7 +528,7 @@ private fun RuleEditorDialog(
                             }
                         }
                     }
-                    if (selectedType in listOf("IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN")) {
+                    if (noResolveCapable) {
                         Row(
                             modifier = Modifier.clickable { noResolve = !noResolve },
                             verticalAlignment = Alignment.CenterVertically

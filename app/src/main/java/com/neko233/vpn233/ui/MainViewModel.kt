@@ -101,7 +101,9 @@ class MainViewModel(private val app: Application) {
             scope.launch(Dispatchers.IO) {
                 MihomoBridge.setMode(mode.coreValue)
                 Vpn233Service.refreshCurrentNodeName()
+                Vpn233Service.refreshNotification(app)
                 refreshGroups()
+                refreshConnections()
             }
         }
     }
@@ -129,13 +131,19 @@ class MainViewModel(private val app: Application) {
 
     fun selectProxy(groupName: String, nodeName: String) {
         scope.launch(Dispatchers.IO) {
+            val prev = _groups.value.firstOrNull { it.name == groupName }?.now
             val ok = MihomoBridge.selectProxy(groupName, nodeName)
             if (ok) {
                 activeProfileId.value?.let { pid ->
                     vpnApp.settingsStore.setSelectedNode(pid, groupName, nodeName)
                 }
                 Vpn233Service.refreshCurrentNodeName()
+                Vpn233Service.refreshNotification(app)
                 refreshGroups()
+                refreshConnections()
+                if (prev != null && prev != nodeName) {
+                    _toastMessage.value = "已切换至 $nodeName，旧连接已断开"
+                }
             }
         }
     }
@@ -275,9 +283,17 @@ class MainViewModel(private val app: Application) {
     }
 
     fun activateProfile(id: String) {
-        vpnApp.profileRepository.setActiveProfile(id)
+        val changed = vpnApp.profileRepository.setActiveProfile(id)
+        if (!changed) {
+            val name = profiles.value.firstOrNull { it.id == id }?.name.orEmpty()
+            if (name.isNotBlank()) _toastMessage.value = "当前已启用「$name」"
+            return
+        }
         if (vpnStatus.value == VpnStatus.RUNNING) {
+            MihomoBridge.closeAllConnections()
             Vpn233Service.reload(app)
+            _connections.value = emptyList()
+            _toastMessage.value = "已切换配置，已断开先前连接"
         }
     }
 
@@ -285,11 +301,21 @@ class MainViewModel(private val app: Application) {
         scope.launch {
             _busyMessage.value = "正在拉取并校验配置..."
             try {
-                val res = vpnApp.profileRepository.importFromUrl(url, name)
-                res.onSuccess { item ->
+                val prevActiveId = activeProfileId.value
+                val res = vpnApp.profileRepository.importFromUrlWithResult(url, name)
+                res.onSuccess { saveRes ->
+                    val item = saveRes.item
                     vpnApp.profileRepository.setActiveProfile(item.id)
-                    if (vpnStatus.value == VpnStatus.RUNNING) Vpn233Service.reload(app)
-                    _toastMessage.value = "已导入配置「${item.name}」"
+                    val needReload = prevActiveId != item.id || saveRes.contentChanged
+                    if (vpnStatus.value == VpnStatus.RUNNING && needReload) {
+                        MihomoBridge.closeAllConnections()
+                        Vpn233Service.reload(app)
+                    }
+                    _toastMessage.value = when {
+                        saveRes.created -> "已导入配置「${item.name}」"
+                        saveRes.contentChanged -> "已幂等更新「${item.name}」"
+                        else -> "配置「${item.name}」无变化（已忽略重复）"
+                    }
                 }.onFailure { err ->
                     _toastMessage.value = err.message ?: "导入失败"
                 }
@@ -304,12 +330,13 @@ class MainViewModel(private val app: Application) {
         scope.launch {
             _busyMessage.value = "正在更新 ${item.name}..."
             try {
-                val res = vpnApp.profileRepository.importFromUrl(item.url, item.name, item.id)
-                res.onSuccess {
-                    if (activeProfileId.value == item.id && vpnStatus.value == VpnStatus.RUNNING) {
+                val res = vpnApp.profileRepository.importFromUrlWithResult(item.url, item.name, item.id)
+                res.onSuccess { saveRes ->
+                    if (activeProfileId.value == item.id && vpnStatus.value == VpnStatus.RUNNING && saveRes.contentChanged) {
+                        MihomoBridge.closeAllConnections()
                         Vpn233Service.reload(app)
                     }
-                    _toastMessage.value = "配置「${item.name}」已更新"
+                    _toastMessage.value = if (saveRes.contentChanged) "配置「${item.name}」已更新" else "配置「${item.name}」已是最新"
                 }.onFailure { err ->
                     _toastMessage.value = "更新失败: ${err.message}"
                 }
@@ -325,12 +352,18 @@ class MainViewModel(private val app: Application) {
         scope.launch {
             _busyMessage.value = "正在更新全部 ${urlProfiles.size} 个订阅..."
             var okCount = 0
+            var activeChanged = false
+            val curActive = activeProfileId.value
             try {
                 for (item in urlProfiles) {
-                    val res = vpnApp.profileRepository.importFromUrl(item.url, item.name, item.id)
-                    if (res.isSuccess) okCount++
+                    val res = vpnApp.profileRepository.importFromUrlWithResult(item.url, item.name, item.id)
+                    res.onSuccess { saveRes ->
+                        okCount++
+                        if (item.id == curActive && saveRes.contentChanged) activeChanged = true
+                    }
                 }
-                if (vpnStatus.value == VpnStatus.RUNNING) {
+                if (vpnStatus.value == VpnStatus.RUNNING && activeChanged) {
+                    MihomoBridge.closeAllConnections()
                     Vpn233Service.reload(app)
                 }
                 _toastMessage.value = "已更新 $okCount/${urlProfiles.size} 个订阅"
@@ -344,15 +377,23 @@ class MainViewModel(private val app: Application) {
         scope.launch {
             _busyMessage.value = "正在校验 YAML..."
             try {
-                val res = vpnApp.profileRepository.saveYamlContent(id, name, yaml, sourceType)
-                res.onSuccess { item ->
+                val prevActiveId = activeProfileId.value
+                val res = vpnApp.profileRepository.saveYamlContentWithResult(id, name, yaml, sourceType)
+                res.onSuccess { saveRes ->
+                    val item = saveRes.item
                     if (id == null) {
                         vpnApp.profileRepository.setActiveProfile(item.id)
                     }
-                    if (activeProfileId.value == item.id && vpnStatus.value == VpnStatus.RUNNING) {
+                    val needReload = (id == null && prevActiveId != item.id) || saveRes.contentChanged
+                    if (activeProfileId.value == item.id && vpnStatus.value == VpnStatus.RUNNING && needReload) {
+                        MihomoBridge.closeAllConnections()
                         Vpn233Service.reload(app)
                     }
-                    _toastMessage.value = "已保存「${item.name}」"
+                    _toastMessage.value = when {
+                        saveRes.created -> "已保存「${item.name}」"
+                        saveRes.contentChanged -> "已幂等更新「${item.name}」"
+                        else -> "配置「${item.name}」内容相同（未重复创建）"
+                    }
                 }.onFailure { err ->
                     _toastMessage.value = err.message ?: "保存失败"
                 }
@@ -366,11 +407,25 @@ class MainViewModel(private val app: Application) {
         scope.launch {
             _busyMessage.value = "正在解析文件..."
             try {
-                val res = vpnApp.profileRepository.importFromUri(uri)
-                res.onSuccess { items ->
-                    items.firstOrNull()?.let { vpnApp.profileRepository.setActiveProfile(it.id) }
-                    if (vpnStatus.value == VpnStatus.RUNNING) Vpn233Service.reload(app)
-                    _toastMessage.value = "成功导入 ${items.size} 个配置"
+                val prevActiveId = activeProfileId.value
+                val res = vpnApp.profileRepository.importFromUriWithResult(uri)
+                res.onSuccess { results ->
+                    val first = results.firstOrNull()
+                    if (first != null) {
+                        vpnApp.profileRepository.setActiveProfile(first.item.id)
+                    }
+                    val changed = first != null && (prevActiveId != first.item.id || first.contentChanged)
+                    if (vpnStatus.value == VpnStatus.RUNNING && changed) {
+                        MihomoBridge.closeAllConnections()
+                        Vpn233Service.reload(app)
+                    }
+                    val newCount = results.count { it.created }
+                    val updCount = results.size - newCount
+                    _toastMessage.value = when {
+                        newCount > 0 && updCount == 0 -> "成功导入 $newCount 个新配置"
+                        newCount == 0 && updCount > 0 -> "幂等更新 $updCount 个已有配置"
+                        else -> "导入 $newCount 个新配置 · 更新 $updCount 个已有配置"
+                    }
                 }.onFailure { err ->
                     _toastMessage.value = err.message ?: "导入失败"
                 }
