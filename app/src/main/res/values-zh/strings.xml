@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">vpn233</string>
+    <string name="notification_channel_name">vpn233 运行状态</string>
+    <string name="shortcut_proxies_short">切换节点</string>
+    <string name="shortcut_proxies_long">切换代理节点与测速</string>
+    <string name="shortcut_rules_short">分流规则</string>
+    <string name="shortcut_rules_long">编辑与查看分流规则</string>
+    <string name="shortcut_monitor_short">连接诊断</string>
+    <string name="shortcut_monitor_long">实时连接、规则测试与日志</string>
+</resources>

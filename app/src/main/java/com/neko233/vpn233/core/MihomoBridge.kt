@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.os.Build
 import com.neko233.vpn233.data.ConnectionItem
 import com.neko233.vpn233.data.CoreLogEntry
+import com.neko233.vpn233.data.MatchTestResult
 import com.neko233.vpn233.data.ProviderItem
 import com.neko233.vpn233.data.ProxyGroupUi
 import com.neko233.vpn233.data.ProxyNodeUi
@@ -131,6 +132,9 @@ object MihomoBridge {
     fun validateConfig(profileDir: String): String =
         nativeValidateConfig(profileDir.utf8()).str()
 
+    fun validateConfigWithOverride(profileDir: String, overrideJson: String): String =
+        nativeValidateConfigWithOverride(profileDir.utf8(), overrideJson.utf8()).str()
+
     fun loadConfig(profileDir: String, overrideJson: String): String =
         nativeLoadConfig(profileDir.utf8(), overrideJson.utf8()).str()
 
@@ -179,6 +183,7 @@ object MihomoBridge {
                         name = g.optString("name"),
                         type = g.optString("type"),
                         now = g.optString("now"),
+                        leafNow = g.optString("leafNow"),
                         icon = g.optString("icon"),
                         selectable = g.optBoolean("selectable", false),
                         proxies = proxies
@@ -211,6 +216,44 @@ object MihomoBridge {
         }.getOrDefault(emptyList())
     }
 
+    fun matchRule(
+        host: String,
+        dstIp: String = "",
+        dstPort: String = "",
+        network: String = "tcp",
+        process: String = ""
+    ): MatchTestResult {
+        val raw = nativeMatchRuleJson(
+            host.utf8(),
+            dstIp.utf8(),
+            dstPort.utf8(),
+            network.utf8(),
+            process.utf8()
+        ).str()
+        if (raw.isBlank()) return MatchTestResult()
+        return runCatching {
+            val o = JSONObject(raw)
+            val chainArr = o.optJSONArray("chain") ?: JSONArray()
+            val chain = ArrayList<String>(chainArr.length())
+            for (i in 0 until chainArr.length()) {
+                chain.add(chainArr.optString(i))
+            }
+            MatchTestResult(
+                matched = o.optBoolean("matched", false),
+                index = o.optInt("index", -1),
+                mode = o.optString("mode", "rule"),
+                ruleType = o.optString("ruleType"),
+                payload = o.optString("payload"),
+                adapter = o.optString("adapter"),
+                raw = o.optString("raw"),
+                resolvedIp = o.optString("resolvedIp"),
+                chain = chain
+            )
+        }.getOrDefault(MatchTestResult())
+    }
+
+    fun flushDnsCache(): String = nativeFlushDnsCache().str()
+
     fun selectProxy(group: String, proxy: String): Boolean =
         nativeSelectProxy(group.utf8(), proxy.utf8())
 
@@ -242,7 +285,9 @@ object MihomoBridge {
                 downNow = obj.optLong("downNow", 0L),
                 upTotal = obj.optLong("upTotal", 0L),
                 downTotal = obj.optLong("downTotal", 0L),
-                memoryBytes = obj.optLong("memory", 0L)
+                memoryBytes = obj.optLong("memory", 0L),
+                heapBytes = obj.optLong("heapBytes", 0L),
+                connCount = obj.optInt("connCount", 0)
             )
         }.getOrDefault(TrafficStats())
     }
@@ -332,6 +377,7 @@ object MihomoBridge {
 
     @JvmStatic private external fun nativeInit(homeDir: ByteArray, version: ByteArray, sdkInt: Int): ByteArray
     @JvmStatic private external fun nativeValidateConfig(profileDir: ByteArray): ByteArray
+    @JvmStatic private external fun nativeValidateConfigWithOverride(profileDir: ByteArray, overrideJson: ByteArray): ByteArray
     @JvmStatic private external fun nativeLoadConfig(profileDir: ByteArray, overrideJson: ByteArray): ByteArray
     @JvmStatic private external fun nativeStartTun(fd: Int, stack: ByteArray, gateway: ByteArray, dns: ByteArray, mtu: Int): ByteArray
     @JvmStatic private external fun nativeStopTun()
@@ -342,6 +388,8 @@ object MihomoBridge {
     @JvmStatic private external fun nativeGetMode(): ByteArray
     @JvmStatic private external fun nativeQueryGroupsJson(testUrl: ByteArray): ByteArray
     @JvmStatic private external fun nativeQueryRulesJson(): ByteArray
+    @JvmStatic private external fun nativeMatchRuleJson(host: ByteArray, dstIp: ByteArray, dstPort: ByteArray, network: ByteArray, process: ByteArray): ByteArray
+    @JvmStatic private external fun nativeFlushDnsCache(): ByteArray
     @JvmStatic private external fun nativeSelectProxy(group: ByteArray, proxy: ByteArray): Boolean
     @JvmStatic private external fun nativeTestGroupDelay(group: ByteArray, testUrl: ByteArray, timeoutMs: Int): ByteArray
     @JvmStatic private external fun nativeTestProxyDelay(proxy: ByteArray, testUrl: ByteArray, timeoutMs: Int): Int

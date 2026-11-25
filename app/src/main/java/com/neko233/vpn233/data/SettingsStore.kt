@@ -70,6 +70,12 @@ class SettingsStore(context: Context) {
                 val f = fakeArr.optString(i)
                 if (f.isNotBlank()) fakeExtra.add(f)
             }
+            val pinned = HashSet<String>()
+            val pinArr = obj.optJSONArray("pinnedNodes") ?: JSONArray()
+            for (i in 0 until pinArr.length()) {
+                val pn = pinArr.optString(i)
+                if (pn.isNotBlank()) pinned.add(pn)
+            }
             AppSettings(
                 routingMode = RoutingMode.fromCore(obj.optString("routingMode", "rule")),
                 tunStack = TunStackMode.fromCore(obj.optString("tunStack", "mixed")),
@@ -102,7 +108,10 @@ class SettingsStore(context: Context) {
                 customRules = customRules,
                 customDnsNameservers = dnsList,
                 fakeIpFilterExtra = fakeExtra,
-                showTrafficInNotification = obj.optBoolean("showTrafficInNotification", true)
+                showTrafficInNotification = obj.optBoolean("showTrafficInNotification", true),
+                disconnectOnNetworkChange = obj.optBoolean("disconnectOnNetworkChange", true),
+                language = AppLanguage.fromCode(obj.optString("language", "system")),
+                pinnedNodes = pinned
             )
         }.getOrDefault(AppSettings())
     }
@@ -114,6 +123,12 @@ class SettingsStore(context: Context) {
             saveSettings(updated)
             return updated
         }
+    }
+
+    fun togglePinnedNode(nodeName: String): AppSettings = update { s ->
+        val next = s.pinnedNodes.toMutableSet()
+        if (!next.add(nodeName)) next.remove(nodeName)
+        s.copy(pinnedNodes = next)
     }
 
     private fun saveSettings(s: AppSettings) {
@@ -155,6 +170,9 @@ class SettingsStore(context: Context) {
             put("customDnsNameservers", JSONArray(s.customDnsNameservers))
             put("fakeIpFilterExtra", JSONArray(s.fakeIpFilterExtra))
             put("showTrafficInNotification", s.showTrafficInNotification)
+            put("disconnectOnNetworkChange", s.disconnectOnNetworkChange)
+            put("language", s.language.code)
+            put("pinnedNodes", JSONArray(s.pinnedNodes.toList()))
         }
         val tmp = File(baseDir, "settings.json.tmp")
         tmp.writeText(obj.toString(2), Charsets.UTF_8)
@@ -165,7 +183,7 @@ class SettingsStore(context: Context) {
         )
     }
 
-    fun toOverrideJson(s: AppSettings = _settings.value): String {
+    fun toOverrideJson(s: AppSettings = _settings.value, mergeYaml: String = ""): String {
         val prepend = s.customRules
             .filter { it.enabled && it.position == RulePosition.PREPEND }
             .map { it.ruleLine.trim() }
@@ -198,6 +216,9 @@ class SettingsStore(context: Context) {
             }
             if (s.fakeIpFilterExtra.isNotEmpty()) {
                 put("fakeIpFilterExtra", JSONArray(s.fakeIpFilterExtra))
+            }
+            if (mergeYaml.isNotBlank()) {
+                put("mergeYaml", mergeYaml)
             }
         }
         return obj.toString()

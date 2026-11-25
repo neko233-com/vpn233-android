@@ -56,6 +56,8 @@ class Vpn233Service : VpnService() {
 
     @Volatile
     private var screenInteractive = true
+    @Volatile
+    private var lastPhysicalNetHandle: Long? = null
     private var lastNotifiedText = ""
 
     private val systemEventReceiver = object : BroadcastReceiver() {
@@ -69,10 +71,19 @@ class Vpn233Service : VpnService() {
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     screenInteractive = true
-                    val logLevel = Vpn233Application.instance.settingsStore.settings.value.logLevel
-                    MihomoBridge.setLogLevel(logLevel)
+                    val app = Vpn233Application.instance
+                    val s = app.settingsStore.settings.value
+                    MihomoBridge.setLogLevel(s.logLevel)
                     if (_status.value == VpnStatus.RUNNING) {
                         ensureMonitorLoop()
+                        serviceScope.launch {
+                            val proxyPort = if (s.mixedPort in 1024..65535) s.mixedPort else 0
+                            val (_, activeChanged) = app.profileRepository.checkDueAutoUpdates(proxyPort)
+                            if (activeChanged) {
+                                MihomoBridge.closeAllConnections()
+                                triggerStartOrReload()
+                            }
+                        }
                     }
                 }
             }
@@ -164,7 +175,8 @@ class Vpn233Service : VpnService() {
             closeTunOnly()
             MihomoBridge.stopMixed()
 
-            val overrideJson = app.settingsStore.toOverrideJson(settings)
+            val mergeYaml = app.profileRepository.readMergeYaml(activeProfile.id)
+            val overrideJson = app.settingsStore.toOverrideJson(settings, mergeYaml)
             val loadErr = MihomoBridge.loadConfig(profileDir.absolutePath, overrideJson)
             if (loadErr.isNotBlank()) {
                 throw IllegalStateException(loadErr)
@@ -370,6 +382,15 @@ class Vpn233Service : VpnService() {
                 val caps = cm.getNetworkCapabilities(network)
                 if (caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
                     pushDns(cm.getLinkProperties(network))
+                    val handle = network.networkHandle
+                    val prev = lastPhysicalNetHandle
+                    lastPhysicalNetHandle = handle
+                    if (prev != null && prev != handle &&
+                        _status.value == VpnStatus.RUNNING &&
+                        Vpn233Application.instance.settingsStore.settings.value.disconnectOnNetworkChange
+                    ) {
+                        runCatching { MihomoBridge.closeAllConnections() }
+                    }
                 }
             }
 
@@ -385,6 +406,14 @@ class Vpn233Service : VpnService() {
                 val caps = cm.getNetworkCapabilities(active)
                 if (active != null && caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == false) {
                     pushDns(cm.getLinkProperties(active))
+                    val handle = active.networkHandle
+                    if (lastPhysicalNetHandle != null && lastPhysicalNetHandle != handle &&
+                        _status.value == VpnStatus.RUNNING &&
+                        Vpn233Application.instance.settingsStore.settings.value.disconnectOnNetworkChange
+                    ) {
+                        runCatching { MihomoBridge.closeAllConnections() }
+                    }
+                    lastPhysicalNetHandle = handle
                 }
             }
         }
@@ -578,7 +607,10 @@ class Vpn233Service : VpnService() {
         fun refreshCurrentNodeName() {
             val s = Vpn233Application.instance.settingsStore.settings.value
             val (_, groups) = MihomoBridge.queryGroups(s.delayTestUrl)
-            _currentNodeName.value = groups.firstOrNull()?.now.orEmpty()
+            val first = groups.firstOrNull()
+            val now = first?.now.orEmpty()
+            val leaf = first?.leafNow.orEmpty()
+            _currentNodeName.value = if (leaf.isNotBlank() && leaf != now) "$now → $leaf" else now
         }
 
         fun refreshNotification(context: Context) {

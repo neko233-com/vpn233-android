@@ -12,8 +12,11 @@ import android.os.Process
 import com.neko233.vpn233.Vpn233Application
 import com.neko233.vpn233.core.MihomoBridge
 import com.neko233.vpn233.data.AccessControlMode
+import com.neko233.vpn233.data.AppLanguage
 import com.neko233.vpn233.data.CustomRuleEntry
+import com.neko233.vpn233.data.NetworkHelpers
 import com.neko233.vpn233.data.ProfileSourceType
+import com.neko233.vpn233.data.ProfileUpdateMode
 import com.neko233.vpn233.data.RoutingMode
 import com.neko233.vpn233.data.RulePosition
 import com.neko233.vpn233.data.ThemeMode
@@ -79,6 +82,13 @@ class AgentControlProvider : ContentProvider() {
                 "activate_profile" -> handleActivateProfile(app, arg.orEmpty(), extras?.getBoolean("force", false) ?: false)
                 "rename_profile" -> handleRenameProfile(app, arg.orEmpty(), extras?.getString("name").orEmpty())
                 "update_profile" -> handleUpdateProfile(app, arg.orEmpty())
+                "set_profile_options" -> handleSetProfileOptions(app, arg.orEmpty(), extras)
+                "get_merge_yaml" -> {
+                    val item = app.profileRepository.findByIdOrName(arg.orEmpty())
+                        ?: return errBundle("Profile not found: $arg")
+                    okBundle(JSONObject().put("id", item.id).put("name", item.name).put("yaml", app.profileRepository.readMergeYaml(item.id)))
+                }
+                "set_merge_yaml" -> handleSetMergeYaml(app, arg.orEmpty(), extras?.getString("yaml").orEmpty())
                 "delete_profile" -> handleDeleteProfile(app, arg.orEmpty())
                 "export_backup" -> {
                     val zip = app.profileRepository.exportAllBackupZip()
@@ -112,6 +122,17 @@ class AgentControlProvider : ContentProvider() {
                     }
                     okBundle(JSONObject().put("cleared", true))
                 }
+                "test_match" -> handleTestMatch(arg.orEmpty(), extras)
+                "flush_dns" -> {
+                    val err = MihomoBridge.flushDnsCache()
+                    if (err.isBlank()) okBundle(JSONObject().put("flushed", true)) else errBundle(err)
+                }
+                "lan_addresses" -> {
+                    val port = app.settingsStore.settings.value.mixedPort
+                    val ips = NetworkHelpers.getLanIpv4Addresses()
+                    val arr = JSONArray(ips.map { "$it:$port" })
+                    okBundle(JSONObject().put("allowLan", app.settingsStore.settings.value.allowLan).put("port", port).put("addresses", arr))
+                }
                 "connections" -> handleConnections()
                 "close_connection" -> okBundle(JSONObject().put("closed", MihomoBridge.closeConnection(arg.orEmpty())))
                 "close_all_connections" -> {
@@ -122,7 +143,7 @@ class AgentControlProvider : ContentProvider() {
                 "force_gc" -> {
                     MihomoBridge.forceGc()
                     val t = MihomoBridge.queryTraffic()
-                    okBundle(JSONObject().put("gc", true).put("memoryBytes", t.memoryBytes))
+                    okBundle(JSONObject().put("gc", true).put("memoryBytes", t.memoryBytes).put("heapBytes", t.heapBytes))
                 }
                 "get_settings" -> okBundle(JSONObject(app.settingsStore.toOverrideJson()).apply {
                     val s = app.settingsStore.settings.value
@@ -135,6 +156,8 @@ class AgentControlProvider : ContentProvider() {
                     put("allowBypass", s.allowBypass)
                     put("autoStartOnBoot", s.autoStartOnBoot)
                     put("showTrafficInNotification", s.showTrafficInNotification)
+                    put("disconnectOnNetworkChange", s.disconnectOnNetworkChange)
+                    put("language", s.language.code)
                     put("delayTestUrl", s.delayTestUrl)
                     put("themeMode", s.themeMode.name)
                     put("accessControlMode", s.accessControlMode.name)
@@ -186,6 +209,8 @@ class AgentControlProvider : ContentProvider() {
                 put("upTotal", t.upTotal)
                 put("downTotal", t.downTotal)
                 put("memoryBytes", t.memoryBytes)
+                put("heapBytes", t.heapBytes)
+                put("connCount", t.connCount)
             })
         })
     }
@@ -231,6 +256,10 @@ class AgentControlProvider : ContentProvider() {
                 put("sourceType", p.sourceType.name)
                 put("url", p.url)
                 put("updatedAt", p.updatedAt)
+                put("autoUpdateMinutes", p.autoUpdateMinutes)
+                put("updateMode", p.updateMode.name)
+                put("customUserAgent", p.customUserAgent)
+                put("hasMergeYaml", p.hasMergeYaml)
                 put("usedBytes", p.usedBytes)
                 put("totalBytes", p.totalBytes)
                 put("expireEpochSec", p.expireEpochSec)
@@ -240,9 +269,18 @@ class AgentControlProvider : ContentProvider() {
         return okBundle(JSONObject().put("profiles", arr))
     }
 
+    private fun runningProxyPort(app: Vpn233Application): Int {
+        if (Vpn233Service.status.value != VpnStatus.RUNNING) return 0
+        val p = app.settingsStore.settings.value.mixedPort
+        return if (p in 1024..65535) p else 0
+    }
+
     private fun handleImportUrl(app: Vpn233Application, url: String, name: String): Bundle {
         val prevActive = app.profileRepository.activeProfileId.value
-        val res = runBlocking(Dispatchers.IO) { app.profileRepository.importFromUrlWithResult(url, name) }
+        val port = runningProxyPort(app)
+        val res = runBlocking(Dispatchers.IO) {
+            app.profileRepository.importFromUrlWithResult(url, name, runningProxyPort = port)
+        }
         val saveRes = res.getOrThrow()
         val item = saveRes.item
         app.profileRepository.setActiveProfile(item.id)
@@ -334,9 +372,10 @@ class AgentControlProvider : ContentProvider() {
         val updatedArr = JSONArray()
         var activeChanged = false
         val activeId = app.profileRepository.activeProfileId.value
+        val port = runningProxyPort(app)
         runBlocking(Dispatchers.IO) {
             targets.forEach { p ->
-                val saveRes = app.profileRepository.importFromUrlWithResult(p.url, p.name, p.id).getOrThrow()
+                val saveRes = app.profileRepository.importFromUrlWithResult(p.url, p.name, p.id, port).getOrThrow()
                 if (p.id == activeId && saveRes.contentChanged) activeChanged = true
                 updatedArr.put(JSONObject().apply {
                     put("id", saveRes.item.id)
@@ -351,6 +390,63 @@ class AgentControlProvider : ContentProvider() {
             waitUntilSettled(timeoutMs = 3500L)
         }
         return okBundle(JSONObject().put("updated", updatedArr))
+    }
+
+    private fun handleSetProfileOptions(app: Vpn233Application, idOrName: String, extras: Bundle?): Bundle {
+        val item = app.profileRepository.findByIdOrName(idOrName)
+            ?: return errBundle("Profile not found: $idOrName")
+        val mins = extras?.getInt("autoUpdateMinutes", item.autoUpdateMinutes) ?: item.autoUpdateMinutes
+        val mode = extras?.getString("updateMode")?.let { ProfileUpdateMode.fromName(it) } ?: item.updateMode
+        val ua = extras?.getString("ua") ?: item.customUserAgent
+        val updated = app.profileRepository.setProfileUpdateOptions(item.id, mins, mode, ua) ?: item
+        return okBundle(JSONObject().apply {
+            put("id", updated.id)
+            put("name", updated.name)
+            put("autoUpdateMinutes", updated.autoUpdateMinutes)
+            put("updateMode", updated.updateMode.name)
+            put("customUserAgent", updated.customUserAgent)
+        })
+    }
+
+    private fun handleSetMergeYaml(app: Vpn233Application, idOrName: String, rawOrPath: String): Bundle {
+        val item = app.profileRepository.findByIdOrName(idOrName)
+            ?: return errBundle("Profile not found: $idOrName")
+        val content = if (rawOrPath.startsWith("/") && File(rawOrPath).exists()) {
+            File(rawOrPath).readText(Charsets.UTF_8)
+        } else {
+            rawOrPath
+        }
+        val saved = app.profileRepository.saveMergeYaml(item.id, content) { m ->
+            app.settingsStore.toOverrideJson(app.settingsStore.settings.value, m)
+        }.getOrThrow()
+        if (app.profileRepository.activeProfileId.value == saved.id && Vpn233Service.status.value == VpnStatus.RUNNING) {
+            MihomoBridge.closeAllConnections()
+            Vpn233Service.reload(app)
+            waitUntilSettled(timeoutMs = 3500L)
+        }
+        return okBundle(JSONObject().put("id", saved.id).put("name", saved.name).put("hasMergeYaml", saved.hasMergeYaml))
+    }
+
+    private fun handleTestMatch(host: String, extras: Bundle?): Bundle {
+        if (Vpn233Service.status.value != VpnStatus.RUNNING) {
+            return errBundle("VPN_NOT_RUNNING")
+        }
+        val dstIp = extras?.getString("dstIp").orEmpty()
+        val port = extras?.getInt("port", 443)?.toString() ?: "443"
+        val network = extras?.getString("network").orEmpty().ifBlank { "tcp" }
+        val proc = extras?.getString("process").orEmpty()
+        val res = MihomoBridge.matchRule(host = host, dstIp = dstIp, dstPort = port, network = network, process = proc)
+        return okBundle(JSONObject().apply {
+            put("matched", res.matched)
+            put("index", res.index)
+            put("mode", res.mode)
+            put("ruleType", res.ruleType)
+            put("payload", res.payload)
+            put("adapter", res.adapter)
+            put("raw", res.raw)
+            put("resolvedIp", res.resolvedIp)
+            put("chain", JSONArray(res.chain))
+        })
     }
 
     private fun handleDeleteProfile(app: Vpn233Application, idOrName: String): Bundle {
@@ -381,6 +477,7 @@ class AgentControlProvider : ContentProvider() {
                 put("name", g.name)
                 put("type", g.type)
                 put("now", g.now)
+                put("leafNow", g.leafNow)
                 put("selectable", g.selectable)
                 put("proxies", pArr)
             })
@@ -604,7 +701,7 @@ class AgentControlProvider : ContentProvider() {
 
     private fun handleSetSetting(app: Vpn233Application, key: String, value: String): Bundle {
         val b = value.equals("true", true) || value == "1"
-        val reloadNeeded = key !in setOf("themeMode", "autoStartOnBoot", "showTrafficInNotification", "delayTestUrl")
+        val reloadNeeded = key !in setOf("themeMode", "autoStartOnBoot", "showTrafficInNotification", "delayTestUrl", "language", "disconnectOnNetworkChange")
         app.settingsStore.update { s ->
             when (key) {
                 "tunStack" -> s.copy(tunStack = TunStackMode.fromCore(value))
@@ -635,6 +732,8 @@ class AgentControlProvider : ContentProvider() {
                     fakeIpFilterExtra = value.split(',').map { it.trim() }.filter { it.isNotEmpty() }
                 )
                 "themeMode" -> s.copy(themeMode = ThemeMode.valueOf(value.uppercase()))
+                "language" -> s.copy(language = AppLanguage.fromCode(value))
+                "disconnectOnNetworkChange" -> s.copy(disconnectOnNetworkChange = b)
                 "autoStartOnBoot" -> s.copy(autoStartOnBoot = b)
                 "showTrafficInNotification" -> s.copy(showTrafficInNotification = b)
                 "delayTestUrl" -> s.copy(delayTestUrl = value)

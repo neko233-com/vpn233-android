@@ -16,10 +16,13 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.URL
 import java.net.URLDecoder
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -37,7 +40,8 @@ data class ProfileSaveResult(
 internal class ProfileStorageEngine(
     filesDir: File,
     private val cacheDir: File,
-    private val configValidator: (String) -> String
+    private val configValidator: (String) -> String,
+    private val overrideValidator: (String, String) -> String = { dir, _ -> configValidator(dir) }
 ) {
     private val profilesRoot = File(filesDir, "profiles").apply { mkdirs() }
     private val metaFile = File(filesDir, "vpn233/profiles.json")
@@ -72,6 +76,35 @@ internal class ProfileStorageEngine(
         return if (f.exists()) f.readText(Charsets.UTF_8) else ""
     }
 
+    fun readMergeYaml(id: String): String {
+        val f = File(getProfileDir(id), "merge.yaml")
+        return if (f.exists()) f.readText(Charsets.UTF_8) else ""
+    }
+
+    fun saveMergeYaml(id: String, mergeYaml: String, baseOverrideJson: (String) -> String = {
+        JSONObject().put("mergeYaml", it).toString()
+    }): Result<ProfileItem> = runCatching {
+        val existing = _profiles.value.firstOrNull { it.id == id }
+            ?: throw IllegalArgumentException("配置不存在")
+        val trimmed = mergeYaml.trim()
+        val pDir = getProfileDir(id)
+        if (trimmed.isNotEmpty()) {
+            val err = overrideValidator(pDir.absolutePath, baseOverrideJson(trimmed))
+            if (err.isNotBlank()) {
+                throw IllegalArgumentException("Merge 覆写校验失败: $err")
+            }
+            File(pDir, "merge.yaml").writeText(trimmed, Charsets.UTF_8)
+        } else {
+            File(pDir, "merge.yaml").delete()
+        }
+        val updatedItem = existing.copy(hasMergeYaml = trimmed.isNotEmpty())
+        synchronized(lock) {
+            _profiles.value = _profiles.value.map { if (it.id == id) updatedItem else it }
+            saveMeta()
+        }
+        updatedItem
+    }
+
     fun reloadFromDisk() {
         synchronized(lock) {
             if (!metaFile.exists()) {
@@ -98,6 +131,9 @@ internal class ProfileStorageEngine(
                             url = o.optString("url", ""),
                             updatedAt = o.optLong("updatedAt", System.currentTimeMillis()),
                             autoUpdateMinutes = o.optInt("autoUpdateMinutes", 0),
+                            updateMode = ProfileUpdateMode.fromName(o.optString("updateMode", ProfileUpdateMode.AUTO.name)),
+                            customUserAgent = o.optString("customUserAgent", ""),
+                            hasMergeYaml = File(getProfileDir(id), "merge.yaml").let { it.exists() && it.length() > 0L },
                             uploadBytes = o.optLong("uploadBytes", -1L),
                             downloadBytes = o.optLong("downloadBytes", -1L),
                             totalBytes = o.optLong("totalBytes", -1L),
@@ -124,6 +160,8 @@ internal class ProfileStorageEngine(
                 put("url", p.url)
                 put("updatedAt", p.updatedAt)
                 put("autoUpdateMinutes", p.autoUpdateMinutes)
+                put("updateMode", p.updateMode.name)
+                put("customUserAgent", p.customUserAgent)
                 put("uploadBytes", p.uploadBytes)
                 put("downloadBytes", p.downloadBytes)
                 put("totalBytes", p.totalBytes)
@@ -149,6 +187,28 @@ internal class ProfileStorageEngine(
                 if (it.id == id) it.copy(autoUpdateMinutes = minutes.coerceAtLeast(0)) else it
             }
             saveMeta()
+        }
+    }
+
+    fun setProfileUpdateOptions(
+        id: String,
+        autoUpdateMinutes: Int,
+        updateMode: ProfileUpdateMode,
+        customUserAgent: String
+    ): ProfileItem? {
+        synchronized(lock) {
+            var updatedItem: ProfileItem? = null
+            _profiles.value = _profiles.value.map {
+                if (it.id == id) {
+                    it.copy(
+                        autoUpdateMinutes = autoUpdateMinutes.coerceAtLeast(0),
+                        updateMode = updateMode,
+                        customUserAgent = customUserAgent.trim()
+                    ).also { item -> updatedItem = item }
+                } else it
+            }
+            saveMeta()
+            return updatedItem
         }
     }
 
@@ -330,6 +390,9 @@ internal class ProfileStorageEngine(
                 url = trimmedUrl,
                 updatedAt = System.currentTimeMillis(),
                 autoUpdateMinutes = if (updateHours > 0) updateHours * 60 else (existing?.autoUpdateMinutes ?: 0),
+                updateMode = existing?.updateMode ?: ProfileUpdateMode.AUTO,
+                customUserAgent = existing?.customUserAgent.orEmpty(),
+                hasMergeYaml = existing?.hasMergeYaml ?: false,
                 uploadBytes = uploadBytes,
                 downloadBytes = downloadBytes,
                 totalBytes = totalBytes,
@@ -414,6 +477,8 @@ internal class ProfileStorageEngine(
                             val outFile = File(pDir, rel)
                             outFile.parentFile?.mkdirs()
                             outFile.writeBytes(ed)
+                        } else if (ep == "$prefix/merge.yaml" && ed.isNotEmpty()) {
+                            File(pDir, "merge.yaml").writeBytes(ed)
                         }
                     }
                 }
@@ -462,6 +527,12 @@ internal class ProfileStorageEngine(
                     zos.write(cfg.readBytes())
                     zos.closeEntry()
                 }
+                val merge = File(getProfileDir(p.id), "merge.yaml")
+                if (merge.exists()) {
+                    zos.putNextEntry(ZipEntry("profiles/${p.id}/merge.yaml"))
+                    zos.write(merge.readBytes())
+                    zos.closeEntry()
+                }
             }
         }
         return outFile
@@ -478,9 +549,13 @@ internal class ProfileStorageEngine(
 }
 
 class ProfileRepository(private val context: Context) {
-    private val storage = ProfileStorageEngine(context.filesDir, context.cacheDir) { dir ->
-        MihomoBridge.validateConfig(dir)
-    }
+    private val storage = ProfileStorageEngine(
+        filesDir = context.filesDir,
+        cacheDir = context.cacheDir,
+        configValidator = { dir -> MihomoBridge.validateConfig(dir) },
+        overrideValidator = { dir, ov -> MihomoBridge.validateConfigWithOverride(dir, ov) }
+    )
+    private val autoUpdateLastAttemptMs = ConcurrentHashMap<String, Long>()
 
     val profiles: StateFlow<List<ProfileItem>> = storage.profiles
     val activeProfileId: StateFlow<String?> = storage.activeProfileId
@@ -489,7 +564,16 @@ class ProfileRepository(private val context: Context) {
     fun getActiveProfileDir(): File? = storage.getActiveProfileDir()
     fun getActiveProfile(): ProfileItem? = storage.getActiveProfile()
     fun readProfileYaml(id: String): String = storage.readProfileYaml(id)
+    fun readMergeYaml(id: String): String = storage.readMergeYaml(id)
+    fun saveMergeYaml(id: String, mergeYaml: String, overrideBuilder: (String) -> String): Result<ProfileItem> =
+        storage.saveMergeYaml(id, mergeYaml, overrideBuilder)
     fun setAutoUpdateMinutes(id: String, minutes: Int) = storage.setAutoUpdateMinutes(id, minutes)
+    fun setProfileUpdateOptions(
+        id: String,
+        autoUpdateMinutes: Int,
+        updateMode: ProfileUpdateMode,
+        customUserAgent: String
+    ): ProfileItem? = storage.setProfileUpdateOptions(id, autoUpdateMinutes, updateMode, customUserAgent)
     fun findByIdOrName(idOrName: String): ProfileItem? = storage.findByIdOrName(idOrName)
     fun setActiveProfile(id: String): Boolean = storage.setActiveProfile(id)
     fun renameProfile(id: String, newName: String) = storage.renameProfile(id, newName)
@@ -517,19 +601,21 @@ class ProfileRepository(private val context: Context) {
     suspend fun importFromUrlWithResult(
         rawUrl: String,
         customName: String = "",
-        existingId: String? = null
+        existingId: String? = null,
+        runningProxyPort: Int = 0
     ): Result<ProfileSaveResult> = withContext(Dispatchers.IO) {
         runCatching {
             val trimmedUrl = rawUrl.trim()
             require(trimmedUrl.startsWith("http://", true) || trimmedUrl.startsWith("https://", true)) {
                 "仅支持 http:// 或 https:// 订阅链接"
             }
-            val conn = (URL(trimmedUrl).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15_000
-                readTimeout = 25_000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "vpn233/1.1 clash-verge/2.0 mihomo/1.19")
-            }
+            val existing = existingId?.let { eid -> profiles.value.firstOrNull { it.id == eid } }
+                ?: storage.findByUrl(trimmedUrl)
+            val updateMode = existing?.updateMode ?: ProfileUpdateMode.AUTO
+            val ua = existing?.customUserAgent?.takeIf { it.isNotBlank() }
+                ?: "vpn233/1.2 clash-verge/2.2 mihomo/1.19"
+
+            val conn = openUrlWithRoutingPolicy(trimmedUrl, ua, updateMode, runningProxyPort)
             val code = conn.responseCode
             if (code !in 200..299) {
                 throw IllegalStateException("服务器返回 HTTP $code")
@@ -541,8 +627,6 @@ class ProfileRepository(private val context: Context) {
             val updateHours = conn.getHeaderField("Profile-Update-Interval")?.trim()?.toIntOrNull() ?: 0
             val headerName = parseContentDispositionName(conn.getHeaderField("Content-Disposition"))
             val urlHostName = runCatching { URL(trimmedUrl).host }.getOrDefault("订阅配置")
-            val existing = existingId?.let { eid -> profiles.value.firstOrNull { it.id == eid } }
-                ?: storage.findByUrl(trimmedUrl)
             val resolvedName = customName.trim().ifBlank {
                 existing?.name ?: headerName?.ifBlank { null } ?: urlHostName
             }
@@ -559,6 +643,69 @@ class ProfileRepository(private val context: Context) {
                 expireEpochSec = userInfo.expire
             )
         }
+    }
+
+    private fun openUrlWithRoutingPolicy(
+        urlStr: String,
+        userAgent: String,
+        mode: ProfileUpdateMode,
+        runningProxyPort: Int
+    ): HttpURLConnection {
+        val proxyCandidates: List<Proxy> = when (mode) {
+            ProfileUpdateMode.DIRECT -> listOf(Proxy.NO_PROXY)
+            ProfileUpdateMode.PROXY -> {
+                if (runningProxyPort in 1024..65535) {
+                    listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", runningProxyPort)))
+                } else {
+                    throw IllegalStateException("当前配置设为仅经代理更新，请先开启 vpn233 隧道")
+                }
+            }
+            ProfileUpdateMode.AUTO -> buildList {
+                if (runningProxyPort in 1024..65535) {
+                    add(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", runningProxyPort)))
+                }
+                add(Proxy.NO_PROXY)
+            }
+        }
+        var lastErr: Throwable? = null
+        for (proxy in proxyCandidates) {
+            try {
+                val conn = (URL(urlStr).openConnection(proxy) as HttpURLConnection).apply {
+                    connectTimeout = 15_000
+                    readTimeout = 25_000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", userAgent)
+                }
+                conn.responseCode
+                return conn
+            } catch (t: Throwable) {
+                lastErr = t
+            }
+        }
+        throw lastErr ?: IllegalStateException("连接订阅服务器失败")
+    }
+
+    suspend fun checkDueAutoUpdates(runningProxyPort: Int): Pair<Int, Boolean> = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val dueProfiles = profiles.value.filter { p ->
+            if (p.url.isBlank() || p.autoUpdateMinutes <= 0) return@filter false
+            val intervalMs = p.autoUpdateMinutes * 60_000L
+            val lastTry = autoUpdateLastAttemptMs[p.id] ?: 0L
+            (now - p.updatedAt) >= intervalMs && (now - lastTry) >= 300_000L
+        }
+        if (dueProfiles.isEmpty()) return@withContext (0 to false)
+        var updatedCount = 0
+        var activeChanged = false
+        val activeId = activeProfileId.value
+        for (p in dueProfiles) {
+            autoUpdateLastAttemptMs[p.id] = now
+            val res = importFromUrlWithResult(p.url, p.name, p.id, runningProxyPort)
+            res.onSuccess { saveRes ->
+                updatedCount++
+                if (p.id == activeId && saveRes.contentChanged) activeChanged = true
+            }
+        }
+        updatedCount to activeChanged
     }
 
     suspend fun importFromUrl(

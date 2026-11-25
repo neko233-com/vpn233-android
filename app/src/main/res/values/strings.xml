@@ -1,4 +1,10 @@
 <resources>
     <string name="app_name">vpn233</string>
     <string name="notification_channel_name">vpn233 Status</string>
+    <string name="shortcut_proxies_short">Proxies</string>
+    <string name="shortcut_proxies_long">Switch proxy node</string>
+    <string name="shortcut_rules_short">Rules</string>
+    <string name="shortcut_rules_long">Edit routing rules</string>
+    <string name="shortcut_monitor_short">Diagnostics</string>
+    <string name="shortcut_monitor_long">Connections &amp; diagnostics</string>
 </resources>

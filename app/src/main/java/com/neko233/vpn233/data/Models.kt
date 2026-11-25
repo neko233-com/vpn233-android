@@ -48,6 +48,28 @@ enum class ProfileSourceType {
     FILE_IMPORT
 }
 
+enum class ProfileUpdateMode(val labelZh: String, val labelEn: String) {
+    AUTO("自动（优先代理）", "Auto (Proxy first)"),
+    PROXY("仅经当前代理", "Via Active Proxy"),
+    DIRECT("仅直连更新", "Direct Only");
+
+    companion object {
+        fun fromName(name: String): ProfileUpdateMode =
+            entries.firstOrNull { it.name.equals(name, true) } ?: AUTO
+    }
+}
+
+enum class AppLanguage(val code: String, val label: String) {
+    SYSTEM("system", "跟随系统 / Auto"),
+    ZH("zh", "简体中文"),
+    EN("en", "English");
+
+    companion object {
+        fun fromCode(code: String): AppLanguage =
+            entries.firstOrNull { it.code.equals(code, true) || it.name.equals(code, true) } ?: SYSTEM
+    }
+}
+
 data class ProfileItem(
     val id: String,
     val name: String,
@@ -55,6 +77,9 @@ data class ProfileItem(
     val url: String = "",
     val updatedAt: Long = System.currentTimeMillis(),
     val autoUpdateMinutes: Int = 0,
+    val updateMode: ProfileUpdateMode = ProfileUpdateMode.AUTO,
+    val customUserAgent: String = "",
+    val hasMergeYaml: Boolean = false,
     val uploadBytes: Long = -1L,
     val downloadBytes: Long = -1L,
     val totalBytes: Long = -1L,
@@ -112,7 +137,10 @@ data class AppSettings(
     val customRules: List<CustomRuleEntry> = emptyList(),
     val customDnsNameservers: List<String> = emptyList(),
     val fakeIpFilterExtra: List<String> = emptyList(),
-    val showTrafficInNotification: Boolean = true
+    val showTrafficInNotification: Boolean = true,
+    val disconnectOnNetworkChange: Boolean = true,
+    val language: AppLanguage = AppLanguage.SYSTEM,
+    val pinnedNodes: Set<String> = emptySet()
 )
 
 data class ProxyNodeUi(
@@ -127,6 +155,7 @@ data class ProxyGroupUi(
     val name: String,
     val type: String,
     val now: String,
+    val leafNow: String = "",
     val icon: String,
     val selectable: Boolean,
     val proxies: List<ProxyNodeUi>
@@ -137,7 +166,21 @@ data class TrafficStats(
     val downNow: Long = 0L,
     val upTotal: Long = 0L,
     val downTotal: Long = 0L,
-    val memoryBytes: Long = 0L
+    val memoryBytes: Long = 0L,
+    val heapBytes: Long = 0L,
+    val connCount: Int = 0
+)
+
+data class MatchTestResult(
+    val matched: Boolean = false,
+    val index: Int = -1,
+    val mode: String = "rule",
+    val ruleType: String = "",
+    val payload: String = "",
+    val adapter: String = "",
+    val raw: String = "",
+    val resolvedIp: String = "",
+    val chain: List<String> = emptyList()
 )
 
 data class ConnectionItem(

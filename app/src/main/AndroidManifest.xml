@@ -41,6 +41,9 @@
                 <data android:scheme="clashmeta" android:host="install-config" />
                 <data android:scheme="vpn233" android:host="install-config" />
             </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <service

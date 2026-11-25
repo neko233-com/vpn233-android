@@ -2,6 +2,7 @@ package com.neko233.vpn233
 
 import com.neko233.vpn233.data.ProfileSourceType
 import com.neko233.vpn233.data.ProfileStorageEngine
+import com.neko233.vpn233.data.ProfileUpdateMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -37,7 +38,7 @@ class ProfileStorageEngineTest {
     fun idempotentNamedYamlAndUrlUpsertsDoNotDuplicate() {
         val filesDir = tempFolder.newFolder("files")
         val cacheDir = tempFolder.newFolder("cache")
-        val engine = ProfileStorageEngine(filesDir, cacheDir) { "" }
+        val engine = ProfileStorageEngine(filesDir, cacheDir, configValidator = { "" })
 
         // 1. Named local/ADB import twice -> same ID, count stays 1
         val first = engine.saveYamlContentWithResult(
@@ -108,7 +109,7 @@ class ProfileStorageEngineTest {
     fun genericClipboardDeduplicatesIdenticalContentWithoutClobberingDifferentContent() {
         val filesDir = tempFolder.newFolder("files2")
         val cacheDir = tempFolder.newFolder("cache2")
-        val engine = ProfileStorageEngine(filesDir, cacheDir) { "" }
+        val engine = ProfileStorageEngine(filesDir, cacheDir, configValidator = { "" })
 
         val clip1 = engine.saveYamlContentWithResult(
             id = null,
@@ -155,8 +156,19 @@ class ProfileStorageEngineTest {
         assertFalse(z2.first().created)
         assertEquals(3, engine.profiles.value.size)
 
-        val reloaded = ProfileStorageEngine(filesDir, cacheDir) { "" }
+        val reloaded = ProfileStorageEngine(filesDir, cacheDir, configValidator = { "" })
         assertEquals(3, reloaded.profiles.value.size)
         assertEquals(clip1.item.id, reloaded.activeProfileId.value)
+
+        // Per-profile Merge YAML + update options persistence
+        reloaded.setProfileUpdateOptions(clip1.item.id, 720, ProfileUpdateMode.PROXY, "clash-verge/v2.2.3")
+        reloaded.saveMergeYaml(clip1.item.id, "prepend-rules:\n  - DOMAIN-SUFFIX,openai.com,PROXY\n").getOrThrow()
+        val reloadedAgain = ProfileStorageEngine(filesDir, cacheDir, configValidator = { "" })
+        val p = reloadedAgain.findByIdOrName(clip1.item.id)!!
+        assertEquals(720, p.autoUpdateMinutes)
+        assertEquals(ProfileUpdateMode.PROXY, p.updateMode)
+        assertEquals("clash-verge/v2.2.3", p.customUserAgent)
+        assertTrue(p.hasMergeYaml)
+        assertTrue(reloadedAgain.readMergeYaml(clip1.item.id).contains("openai.com"))
     }
 }

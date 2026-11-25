@@ -5,7 +5,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.URL
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 class GeoDatabaseManager(private val context: Context) {
     val homeDir = File(context.filesDir, "mihomo").apply { mkdirs() }
@@ -42,7 +46,7 @@ class GeoDatabaseManager(private val context: Context) {
         asnBytes = if (asnFile.exists()) asnFile.length() else 0L
     )
 
-    suspend fun upgradeToFullDatabases(onStep: (String) -> Unit): Result<GeoDbStatus> =
+    suspend fun upgradeToFullDatabases(proxyPort: Int = 0, onStep: (String) -> Unit): Result<GeoDbStatus> =
         withContext(Dispatchers.IO) {
             runCatching {
                 onStep("正在下载完整版 geoip.metadb...")
@@ -51,7 +55,8 @@ class GeoDatabaseManager(private val context: Context) {
                         "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb",
                         "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
                     ),
-                    geoIpFile
+                    geoIpFile,
+                    proxyPort
                 )
                 onStep("正在下载完整版 GeoSite.dat...")
                 downloadWithFallback(
@@ -59,7 +64,8 @@ class GeoDatabaseManager(private val context: Context) {
                         "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
                         "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
                     ),
-                    geoSiteFile
+                    geoSiteFile,
+                    proxyPort
                 )
                 onStep("正在下载 ASN.mmdb...")
                 downloadWithFallback(
@@ -67,7 +73,8 @@ class GeoDatabaseManager(private val context: Context) {
                         "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb",
                         "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb"
                     ),
-                    asnFile
+                    asnFile,
+                    proxyPort
                 )
                 getStatus()
             }
@@ -81,33 +88,40 @@ class GeoDatabaseManager(private val context: Context) {
         return getStatus()
     }
 
-    private fun downloadWithFallback(urls: List<String>, target: File) {
+    private fun downloadWithFallback(urls: List<String>, target: File, proxyPort: Int) {
         var lastError: Throwable? = null
+        val proxies = buildList {
+            if (proxyPort in 1024..65535) {
+                add(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort)))
+            }
+            add(Proxy.NO_PROXY)
+        }
         for (u in urls) {
-            val tmp = File(target.parentFile, "${target.name}.dl")
-            try {
-                val conn = (URL(u).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 15_000
-                    readTimeout = 30_000
-                    setRequestProperty("User-Agent", "vpn233/1.0 mihomo/1.19")
-                    instanceFollowRedirects = true
+            for (prx in proxies) {
+                val tmp = File(target.parentFile, "${target.name}.dl")
+                try {
+                    val conn = (URL(u).openConnection(prx) as HttpURLConnection).apply {
+                        connectTimeout = 15_000
+                        readTimeout = 30_000
+                        setRequestProperty("User-Agent", "vpn233/1.2 mihomo/1.19")
+                        instanceFollowRedirects = true
+                    }
+                    val code = conn.responseCode
+                    if (code !in 200..299) {
+                        throw IllegalStateException("HTTP $code from $u")
+                    }
+                    conn.inputStream.use { input ->
+                        tmp.outputStream().use { out -> input.copyTo(out) }
+                    }
+                    if (tmp.length() < 10_000L) {
+                        throw IllegalStateException("Downloaded file too small from $u")
+                    }
+                    Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    return
+                } catch (t: Throwable) {
+                    tmp.delete()
+                    lastError = t
                 }
-                val code = conn.responseCode
-                if (code !in 200..299) {
-                    throw IllegalStateException("HTTP $code from $u")
-                }
-                conn.inputStream.use { input ->
-                    tmp.outputStream().use { out -> input.copyTo(out) }
-                }
-                if (tmp.length() < 10_000L) {
-                    throw IllegalStateException("Downloaded file too small from $u")
-                }
-                if (target.exists()) target.delete()
-                tmp.renameTo(target)
-                return
-            } catch (t: Throwable) {
-                tmp.delete()
-                lastError = t
             }
         }
         throw lastError ?: IllegalStateException("Failed to download ${target.name}")

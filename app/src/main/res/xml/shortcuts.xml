@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="proxies"
+        android:enabled="true"
+        android:icon="@drawable/ic_qs_tile"
+        android:shortcutShortLabel="@string/shortcut_proxies_short"
+        android:shortcutLongLabel="@string/shortcut_proxies_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.neko233.vpn233"
+            android:targetClass="com.neko233.vpn233.MainActivity">
+            <extra android:name="tab" android:value="proxies" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="rules"
+        android:enabled="true"
+        android:icon="@drawable/ic_qs_tile"
+        android:shortcutShortLabel="@string/shortcut_rules_short"
+        android:shortcutLongLabel="@string/shortcut_rules_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.neko233.vpn233"
+            android:targetClass="com.neko233.vpn233.MainActivity">
+            <extra android:name="open_rules" android:value="true" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="monitor"
+        android:enabled="true"
+        android:icon="@drawable/ic_qs_tile"
+        android:shortcutShortLabel="@string/shortcut_monitor_short"
+        android:shortcutLongLabel="@string/shortcut_monitor_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.neko233.vpn233"
+            android:targetClass="com.neko233.vpn233.MainActivity">
+            <extra android:name="open_monitor" android:value="true" />
+        </intent>
+    </shortcut>
+</shortcuts>
