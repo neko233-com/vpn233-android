@@ -1,3 +1,5 @@
+//go:build android
+
 package main
 
 /*
@@ -9,12 +11,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -26,7 +26,6 @@ import (
 	_ "time/tzdata"
 	"unsafe"
 
-	"github.com/dlclark/regexp2"
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/dialer"
@@ -37,8 +36,8 @@ import (
 	"github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/dns"
 	"github.com/metacubex/mihomo/hub/executor"
-	"github.com/metacubex/mihomo/listener/mixed"
 	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/mixed"
 	"github.com/metacubex/mihomo/listener/sing_tun"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
@@ -55,47 +54,6 @@ var (
 	logOnce      sync.Once
 	logStreaming atomic.Bool
 )
-
-type OverrideOptions struct {
-	Mode                *string  `json:"mode,omitempty"`
-	IPv6                *bool    `json:"ipv6,omitempty"`
-	UnifiedDelay        *bool    `json:"unifiedDelay,omitempty"`
-	TCPConcurrent       *bool    `json:"tcpConcurrent,omitempty"`
-	GeodataMode         *bool    `json:"geodataMode,omitempty"`
-	FindProcessMode     *string  `json:"findProcessMode,omitempty"`
-	AppendSystemDns     *bool    `json:"appendSystemDns,omitempty"`
-	ForceDnsMapping     *bool    `json:"forceDnsMapping,omitempty"`
-	Sniffing            *bool    `json:"sniffing,omitempty"`
-	OverrideDestination *bool    `json:"overrideDestination,omitempty"`
-	FakeIPRange         *string  `json:"fakeIpRange,omitempty"`
-	NameServers         []string `json:"nameServers,omitempty"`
-	FallbackNameServers []string `json:"fallbackNameServers,omitempty"`
-	PrependRules        []string `json:"prependRules,omitempty"`
-	LogLevel            *string  `json:"logLevel,omitempty"`
-}
-
-var defaultNameServers = []string{
-	"223.5.5.5",
-	"119.29.29.29",
-	"8.8.4.4",
-	"1.0.0.1",
-}
-
-var defaultFakeIPFilter = []string{
-	"+.stun.*.*",
-	"+.stun.*.*.*",
-	"+.stun.*.*.*.*",
-	"+.stun.*.*.*.*.*",
-	"lens.l.google.com",
-	"*.n.n.srv.nintendo.net",
-	"+.stun.playstation.net",
-	"xbox.*.*.microsoft.com",
-	"*.*.xboxlive.com",
-	"*.msftncsi.com",
-	"*.msftconnecttest.com",
-	"*.mcdn.bilivideo.cn",
-	"WORKGROUP",
-}
 
 func init() {
 	debug.SetMemoryLimit(128 * 1024 * 1024)
@@ -176,156 +134,6 @@ func goInit(homeDirC, versionC *C.char, sdkInt C.int) *C.char {
 
 	startLogLoop()
 	return C.CString("")
-}
-
-func resolveAndPatchConfig(profileDir string, overrideJson string) (*config.RawConfig, error) {
-	configPath := filepath.Join(profileDir, "config.yaml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("read config.yaml: %w", err)
-	}
-	rawCfg, err := config.UnmarshalRawConfig(data)
-	if err != nil {
-		return nil, fmt.Errorf("parse yaml: %w", err)
-	}
-
-	var ov OverrideOptions
-	if strings.TrimSpace(overrideJson) != "" {
-		if err := json.Unmarshal([]byte(overrideJson), &ov); err != nil {
-			log.Warnln("Invalid override json: %s", err.Error())
-		}
-	}
-
-	rawCfg.ExternalController = ""
-	rawCfg.ExternalControllerTLS = ""
-	rawCfg.Port = 0
-	rawCfg.SocksPort = 0
-	rawCfg.RedirPort = 0
-	rawCfg.TProxyPort = 0
-	rawCfg.MixedPort = 0
-	rawCfg.Interface = ""
-	rawCfg.RoutingMark = 0
-	rawCfg.Tun.Enable = false
-	rawCfg.Tun.AutoRoute = false
-	rawCfg.Tun.AutoDetectInterface = false
-	rawCfg.Profile.StoreSelected = true
-	rawCfg.Profile.StoreFakeIP = true
-
-	// Apply user UI overrides
-	if ov.Mode != nil {
-		if m, ok := tunnel.ModeMapping[strings.ToLower(*ov.Mode)]; ok {
-			rawCfg.Mode = m
-		}
-	}
-	if ov.IPv6 != nil {
-		rawCfg.IPv6 = *ov.IPv6
-	}
-	if ov.UnifiedDelay != nil {
-		rawCfg.UnifiedDelay = *ov.UnifiedDelay
-	}
-	if ov.TCPConcurrent != nil {
-		rawCfg.TCPConcurrent = *ov.TCPConcurrent
-	}
-	if ov.GeodataMode != nil {
-		rawCfg.GeodataMode = *ov.GeodataMode
-	}
-	if ov.FindProcessMode != nil {
-		_ = rawCfg.FindProcessMode.Set(*ov.FindProcessMode)
-	}
-	if ov.LogLevel != nil {
-		if lvl, ok := log.LogLevelMapping[strings.ToLower(*ov.LogLevel)]; ok {
-			rawCfg.LogLevel = lvl
-		}
-	}
-	if ov.Sniffing != nil {
-		rawCfg.Sniffer.Enable = *ov.Sniffing
-	}
-	if ov.OverrideDestination != nil {
-		rawCfg.Sniffer.OverrideDest = *ov.OverrideDestination
-	}
-
-	forceDns := ov.ForceDnsMapping != nil && *ov.ForceDnsMapping
-	if !rawCfg.DNS.Enable || forceDns {
-		if !rawCfg.DNS.Enable {
-			rawCfg.DNS = config.DefaultRawConfig().DNS
-			rawCfg.DNS.Enable = true
-			rawCfg.DNS.NameServer = append([]string{}, defaultNameServers...)
-			rawCfg.DNS.FakeIPFilter = append([]string{}, defaultFakeIPFilter...)
-		}
-		rawCfg.DNS.EnhancedMode = C2.DNSFakeIP
-		if ov.FakeIPRange != nil && *ov.FakeIPRange != "" {
-			rawCfg.DNS.FakeIPRange = *ov.FakeIPRange
-		} else if rawCfg.DNS.FakeIPRange == "" {
-			rawCfg.DNS.FakeIPRange = "28.0.0.0/8"
-		}
-	}
-	if len(ov.NameServers) > 0 {
-		rawCfg.DNS.NameServer = append([]string{}, ov.NameServers...)
-	}
-	if len(ov.FallbackNameServers) > 0 {
-		rawCfg.DNS.Fallback = append([]string{}, ov.FallbackNameServers...)
-	}
-
-	appendSysDns := rawCfg.ClashForAndroid.AppendSystemDNS
-	if ov.AppendSystemDns != nil {
-		appendSysDns = *ov.AppendSystemDns
-	}
-	if appendSysDns {
-		hasSystem := false
-		for _, ns := range rawCfg.DNS.NameServer {
-			if strings.EqualFold(strings.TrimSpace(ns), "system://") {
-				hasSystem = true
-				break
-			}
-		}
-		if !hasSystem {
-			rawCfg.DNS.NameServer = append(rawCfg.DNS.NameServer, "system://")
-		}
-	}
-
-	if len(ov.PrependRules) > 0 {
-		rawCfg.Rule = append(append([]string{}, ov.PrependRules...), rawCfg.Rule...)
-	}
-
-	// Remove unsupported raw listeners
-	if len(rawCfg.Listeners) > 0 {
-		filtered := make([]map[string]any, 0, len(rawCfg.Listeners))
-		for _, l := range rawCfg.Listeners {
-			if t, ok := l["type"].(string); ok {
-				switch strings.ToLower(t) {
-				case "tproxy", "redir", "tun":
-					continue
-				}
-			}
-			filtered = append(filtered, l)
-		}
-		rawCfg.Listeners = filtered
-	}
-
-	// Scope provider paths safely inside profileDir/providers/
-	patchProviderMap := func(m map[string]map[string]any, prefix string) {
-		for _, item := range m {
-			p, _ := item["path"].(string)
-			if p != "" {
-				cleaned := strings.TrimLeft(filepath.ToSlash(filepath.Clean(p)), "./")
-				item["path"] = filepath.Join(profileDir, "providers", cleaned)
-			} else if urlStr, ok := item["url"].(string); ok && urlStr != "" {
-				item["path"] = filepath.Join(profileDir, "providers", prefix, utils.MakeHash([]byte(urlStr)).String())
-			}
-		}
-	}
-	patchProviderMap(rawCfg.ProxyProvider, "proxy")
-	patchProviderMap(rawCfg.RuleProvider, "rule")
-
-	if len(rawCfg.Proxy) == 0 && len(rawCfg.ProxyProvider) == 0 {
-		return nil, errors.New("profile contains neither proxies nor proxy-providers")
-	}
-	if rawCfg.ClashForAndroid.UiSubtitlePattern != "" {
-		if _, err := regexp2.Compile(rawCfg.ClashForAndroid.UiSubtitlePattern, 0); err != nil {
-			return nil, fmt.Errorf("invalid ui-subtitle-pattern: %w", err)
-		}
-	}
-	return rawCfg, nil
 }
 
 //export goValidateConfig
@@ -531,13 +339,12 @@ func resolveLastDelay(p C2.Proxy, testUrl string) (int, bool) {
 			return int(h.Delay), true
 		}
 	}
-	for urlKey, st := range p.ExtraDelayHistories() {
+	for _, st := range p.ExtraDelayHistories() {
 		if st.Alive && len(st.History) > 0 {
 			last := st.History[len(st.History)-1]
 			if last.Delay > 0 {
 				return int(last.Delay), true
 			}
-			_ = urlKey
 		}
 	}
 	return -1, alive
@@ -609,6 +416,13 @@ func goQueryGroupsJson(testUrlC *C.char) *C.char {
 	return C.CString(string(b))
 }
 
+//export goQueryRulesJson
+func goQueryRulesJson() *C.char {
+	res := buildRulesDTO(tunnel.Rules())
+	b, _ := json.Marshal(res)
+	return C.CString(string(b))
+}
+
 //export goSelectProxy
 func goSelectProxy(groupC, proxyC *C.char) C.int {
 	groupName := C.GoString(groupC)
@@ -624,7 +438,6 @@ func goSelectProxy(groupC, proxyC *C.char) C.int {
 	if err := s.Set(proxyName); err != nil {
 		return 0
 	}
-	// Close connections routed via this group so new selection takes effect immediately
 	statistic.DefaultManager.Range(func(c statistic.Tracker) bool {
 		for _, ch := range c.Info().Chain {
 			if ch == groupName {

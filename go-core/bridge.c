@@ -1,3 +1,4 @@
+#ifdef __ANDROID__
 #include <jni.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -240,6 +241,12 @@ Java_com_neko233_vpn233_core_MihomoBridge_nativeQueryGroupsJson(JNIEnv *env, jcl
     return cstr_to_jbytes_and_free(env, res);
 }
 
+JNIEXPORT jbyteArray JNICALL
+Java_com_neko233_vpn233_core_MihomoBridge_nativeQueryRulesJson(JNIEnv *env, jclass clazz) {
+    (void)clazz;
+    return cstr_to_jbytes_and_free(env, goQueryRulesJson());
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_neko233_vpn233_core_MihomoBridge_nativeSelectProxy(JNIEnv *env, jclass clazz, jbyteArray group, jbyteArray proxy) {
     (void)clazz;
@@ -368,3 +375,4 @@ Java_com_neko233_vpn233_core_MihomoBridge_nativeCoreVersion(JNIEnv *env, jclass 
     (void)clazz;
     return cstr_to_jbytes_and_free(env, goCoreVersion());
 }
+#endif

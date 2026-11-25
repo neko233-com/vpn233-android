@@ -23,8 +23,10 @@ try {
         -tags "cmfa,with_gvisor,with_low_memory,no_easytier,no_tailscale,no_zerotier,no_fake_tcp" `
         -trimpath -ldflags="-s -w" `
         -o (Join-Path $OutDir "libmihomo.so") .
+    if ($LASTEXITCODE -ne 0) { throw "go build failed with exit code $LASTEXITCODE" }
 
     & (Join-Path $NdkBin "llvm-strip.exe") --strip-unneeded (Join-Path $OutDir "libmihomo.so")
+    if ($LASTEXITCODE -ne 0) { throw "llvm-strip failed with exit code $LASTEXITCODE" }
     Remove-Item (Join-Path $OutDir "libmihomo.h") -ErrorAction SilentlyContinue
     Write-Host "Built libmihomo.so -> $((Get-Item (Join-Path $OutDir 'libmihomo.so')).Length) bytes"
 } finally {
