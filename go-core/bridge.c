@@ -165,6 +165,17 @@ Java_com_neko233_vpn233_core_MihomoBridge_nativeValidateConfig(JNIEnv *env, jcla
 }
 
 JNIEXPORT jbyteArray JNICALL
+Java_com_neko233_vpn233_core_MihomoBridge_nativeValidateConfigWithOverride(JNIEnv *env, jclass clazz, jbyteArray profileDir, jbyteArray overrideJson) {
+    (void)clazz;
+    char *p = jbytes_to_cstr(env, profileDir);
+    char *o = jbytes_to_cstr(env, overrideJson);
+    char *res = goValidateConfigWithOverride(p, o);
+    free(p);
+    free(o);
+    return cstr_to_jbytes_and_free(env, res);
+}
+
+JNIEXPORT jbyteArray JNICALL
 Java_com_neko233_vpn233_core_MihomoBridge_nativeLoadConfig(JNIEnv *env, jclass clazz, jbyteArray profileDir, jbyteArray overrideJson) {
     (void)clazz;
     char *p = jbytes_to_cstr(env, profileDir);
@@ -245,6 +256,29 @@ JNIEXPORT jbyteArray JNICALL
 Java_com_neko233_vpn233_core_MihomoBridge_nativeQueryRulesJson(JNIEnv *env, jclass clazz) {
     (void)clazz;
     return cstr_to_jbytes_and_free(env, goQueryRulesJson());
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_neko233_vpn233_core_MihomoBridge_nativeMatchRuleJson(JNIEnv *env, jclass clazz, jbyteArray host, jbyteArray dstIp, jbyteArray dstPort, jbyteArray network, jbyteArray process) {
+    (void)clazz;
+    char *h = jbytes_to_cstr(env, host);
+    char *ip = jbytes_to_cstr(env, dstIp);
+    char *pt = jbytes_to_cstr(env, dstPort);
+    char *nw = jbytes_to_cstr(env, network);
+    char *pr = jbytes_to_cstr(env, process);
+    char *res = goMatchRuleJson(h, ip, pt, nw, pr);
+    free(h);
+    free(ip);
+    free(pt);
+    free(nw);
+    free(pr);
+    return cstr_to_jbytes_and_free(env, res);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_neko233_vpn233_core_MihomoBridge_nativeFlushDnsCache(JNIEnv *env, jclass clazz) {
+    (void)clazz;
+    return cstr_to_jbytes_and_free(env, goFlushDnsCache());
 }
 
 JNIEXPORT jboolean JNICALL

@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dlclark/regexp2"
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
@@ -19,6 +23,7 @@ import (
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
+	"go.yaml.in/yaml/v3"
 )
 
 type OverrideOptions struct {
@@ -39,6 +44,30 @@ type OverrideOptions struct {
 	AppendRules         []string `json:"appendRules,omitempty"`
 	FakeIPFilterExtra   []string `json:"fakeIpFilterExtra,omitempty"`
 	LogLevel            *string  `json:"logLevel,omitempty"`
+	MergeYaml           *string  `json:"mergeYaml,omitempty"`
+}
+
+type MergeConfig struct {
+	PrependRules       []string         `yaml:"prepend-rules"`
+	AppendRules        []string         `yaml:"append-rules"`
+	PrependProxies     []map[string]any `yaml:"prepend-proxies"`
+	AppendProxies      []map[string]any `yaml:"append-proxies"`
+	PrependProxyGroups []map[string]any `yaml:"prepend-proxy-groups"`
+	AppendProxyGroups  []map[string]any `yaml:"append-proxy-groups"`
+	Rules              []string         `yaml:"rules"`
+	NameServers        []string         `yaml:"nameserver"`
+}
+
+type matchResultDTO struct {
+	Matched    bool     `json:"matched"`
+	Index      int      `json:"index"`
+	Mode       string   `json:"mode"`
+	RuleType   string   `json:"ruleType"`
+	Payload    string   `json:"payload"`
+	Adapter    string   `json:"adapter"`
+	Raw        string   `json:"raw"`
+	ResolvedIP string   `json:"resolvedIp"`
+	Chain      []string `json:"chain"`
 }
 
 type ruleDTO struct {
@@ -193,29 +222,39 @@ func resolveAndPatchConfig(profileDir string, overrideJson string) (*config.RawC
 		return out
 	}
 
-	prependRules := cleanNonBlank(ov.PrependRules)
+	var mergeSpec MergeConfig
+	hasMerge := ov.MergeYaml != nil && strings.TrimSpace(*ov.MergeYaml) != ""
+	if hasMerge {
+		if err := yaml.Unmarshal([]byte(*ov.MergeYaml), &mergeSpec); err != nil {
+			return nil, fmt.Errorf("parse merge yaml: %w", err)
+		}
+		if len(mergeSpec.PrependProxies) > 0 {
+			rawCfg.Proxy = append(append([]map[string]any{}, mergeSpec.PrependProxies...), rawCfg.Proxy...)
+		}
+		if len(mergeSpec.AppendProxies) > 0 {
+			rawCfg.Proxy = append(rawCfg.Proxy, mergeSpec.AppendProxies...)
+		}
+		if len(mergeSpec.PrependProxyGroups) > 0 {
+			rawCfg.ProxyGroup = append(append([]map[string]any{}, mergeSpec.PrependProxyGroups...), rawCfg.ProxyGroup...)
+		}
+		if len(mergeSpec.AppendProxyGroups) > 0 {
+			rawCfg.ProxyGroup = append(rawCfg.ProxyGroup, mergeSpec.AppendProxyGroups...)
+		}
+		if mRules := cleanNonBlank(mergeSpec.Rules); len(mRules) > 0 {
+			rawCfg.Rule = mRules
+		}
+		if len(ov.NameServers) == 0 && len(mergeSpec.NameServers) > 0 {
+			rawCfg.DNS.NameServer = cleanNonBlank(mergeSpec.NameServers)
+		}
+	}
+
+	prependRules := append(cleanNonBlank(ov.PrependRules), cleanNonBlank(mergeSpec.PrependRules)...)
 	if len(prependRules) > 0 {
 		rawCfg.Rule = append(prependRules, rawCfg.Rule...)
 	}
-	appendRules := cleanNonBlank(ov.AppendRules)
+	appendRules := append(cleanNonBlank(mergeSpec.AppendRules), cleanNonBlank(ov.AppendRules)...)
 	if len(appendRules) > 0 {
-		matchIdx := -1
-		for i := len(rawCfg.Rule) - 1; i >= 0; i-- {
-			upper := strings.ToUpper(strings.TrimSpace(rawCfg.Rule[i]))
-			if strings.HasPrefix(upper, "MATCH,") || upper == "MATCH" {
-				matchIdx = i
-				break
-			}
-		}
-		if matchIdx >= 0 {
-			updated := make([]string, 0, len(rawCfg.Rule)+len(appendRules))
-			updated = append(updated, rawCfg.Rule[:matchIdx]...)
-			updated = append(updated, appendRules...)
-			updated = append(updated, rawCfg.Rule[matchIdx:]...)
-			rawCfg.Rule = updated
-		} else {
-			rawCfg.Rule = append(rawCfg.Rule, appendRules...)
-		}
+		rawCfg.Rule = insertRulesBeforeMatch(rawCfg.Rule, appendRules)
 	}
 
 	if len(rawCfg.Listeners) > 0 {
@@ -276,6 +315,183 @@ func buildRulesDTO(rules []C2.Rule) []ruleDTO {
 		})
 	}
 	return res
+}
+
+func insertRulesBeforeMatch(existing []string, toInsert []string) []string {
+	matchIdx := -1
+	for i := len(existing) - 1; i >= 0; i-- {
+		upper := strings.ToUpper(strings.TrimSpace(existing[i]))
+		if strings.HasPrefix(upper, "MATCH,") || upper == "MATCH" {
+			matchIdx = i
+			break
+		}
+	}
+	if matchIdx >= 0 {
+		updated := make([]string, 0, len(existing)+len(toInsert))
+		updated = append(updated, existing[:matchIdx]...)
+		updated = append(updated, toInsert...)
+		updated = append(updated, existing[matchIdx:]...)
+		return updated
+	}
+	return append(append([]string{}, existing...), toInsert...)
+}
+
+func resolveLeafNow(allProxies map[string]C2.Proxy, groupName string) string {
+	cur := groupName
+	seen := make(map[string]bool, 8)
+	for i := 0; i < 16; i++ {
+		if seen[cur] {
+			break
+		}
+		seen[cur] = true
+		p := allProxies[cur]
+		if p == nil {
+			break
+		}
+		g, ok := p.Adapter().(outboundgroup.ProxyGroup)
+		if !ok {
+			break
+		}
+		next := g.Now()
+		if next == "" || next == cur {
+			break
+		}
+		cur = next
+	}
+	return cur
+}
+
+func resolveAdapterChain(allProxies map[string]C2.Proxy, startAdapter string) []string {
+	if startAdapter == "" {
+		return nil
+	}
+	chain := []string{startAdapter}
+	cur := startAdapter
+	seen := map[string]bool{startAdapter: true}
+	for i := 0; i < 16; i++ {
+		p := allProxies[cur]
+		if p == nil {
+			break
+		}
+		g, ok := p.Adapter().(outboundgroup.ProxyGroup)
+		if !ok {
+			break
+		}
+		next := g.Now()
+		if next == "" || seen[next] {
+			break
+		}
+		seen[next] = true
+		chain = append(chain, next)
+		cur = next
+	}
+	return chain
+}
+
+func matchRuleForQuery(host, dstIp, dstPort, network, proc string) matchResultDTO {
+	mode := tunnel.Mode()
+	allProxies := tunnel.Proxies()
+	res := matchResultDTO{
+		Mode: mode.String(),
+	}
+	if mode == tunnel.Direct {
+		res.Matched = true
+		res.Index = -1
+		res.RuleType = "ModeDirect"
+		res.Adapter = "DIRECT"
+		res.Raw = "MODE,DIRECT"
+		res.Chain = []string{"DIRECT"}
+		return res
+	}
+	if mode == tunnel.Global {
+		res.Matched = true
+		res.Index = -1
+		res.RuleType = "ModeGlobal"
+		res.Adapter = "GLOBAL"
+		res.Raw = "MODE,GLOBAL"
+		res.Chain = resolveAdapterChain(allProxies, "GLOBAL")
+		return res
+	}
+
+	netType := C2.TCP
+	if strings.EqualFold(strings.TrimSpace(network), "udp") {
+		netType = C2.UDP
+	}
+	var portNum uint16 = 443
+	if pVal, err := strconv.Atoi(strings.TrimSpace(dstPort)); err == nil && pVal > 0 && pVal <= 65535 {
+		portNum = uint16(pVal)
+	} else if netType == C2.UDP {
+		portNum = 53
+	}
+	var parsedIp netip.Addr
+	if ipTrim := strings.TrimSpace(dstIp); ipTrim != "" {
+		if ip, err := netip.ParseAddr(ipTrim); err == nil {
+			parsedIp = ip
+		}
+	}
+	hostTrim := strings.TrimSpace(host)
+	if !parsedIp.IsValid() && hostTrim != "" {
+		if ip, err := netip.ParseAddr(hostTrim); err == nil {
+			parsedIp = ip
+			hostTrim = ""
+		}
+	}
+
+	meta := C2.Metadata{
+		NetWork: netType,
+		Host:    hostTrim,
+		DstIP:   parsedIp,
+		DstPort: portNum,
+		Process: strings.TrimSpace(proc),
+	}
+	resolved := false
+	helper := C2.RuleMatchHelper{
+		ResolveIP: func() {
+			if resolved || meta.Host == "" || meta.DstIP.IsValid() {
+				return
+			}
+			resolved = true
+			ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+			defer cancel()
+			if ip, err := resolver.ResolveIP(ctx, meta.Host); err == nil && ip.IsValid() {
+				meta.DstIP = ip
+				res.ResolvedIP = ip.String()
+			}
+		},
+		FindProcess:   func() {},
+		CheckPassRule: func(string) bool { return false },
+	}
+
+	for i, rule := range tunnel.Rules() {
+		if ok, adapter := rule.Match(&meta, helper); ok {
+			t := rule.RuleType().String()
+			pl := rule.Payload()
+			if adapter == "" {
+				adapter = rule.Adapter()
+			}
+			raw := fmt.Sprintf("%s,%s", t, adapter)
+			if pl != "" {
+				raw = fmt.Sprintf("%s,%s,%s", t, pl, adapter)
+			}
+			res.Matched = true
+			res.Index = i
+			res.RuleType = t
+			res.Payload = pl
+			res.Adapter = adapter
+			res.Raw = raw
+			if meta.DstIP.IsValid() && res.ResolvedIP == "" {
+				res.ResolvedIP = meta.DstIP.String()
+			}
+			res.Chain = resolveAdapterChain(allProxies, adapter)
+			return res
+		}
+	}
+	return res
+}
+
+func flushDnsAndFakeIPInternal() error {
+	resolver.ClearCache()
+	return resolver.FlushFakeIP()
 }
 
 func closeAllConnectionsInternal() {

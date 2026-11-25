@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/metacubex/mihomo/config"
 	C2 "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/hub/executor"
+	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
 )
 
@@ -205,6 +207,91 @@ rules:
 	applyConfigAndCloseConnections(cfg2)
 	if !trReload.closed {
 		t.Fatalf("expected connection closed on config hot-reload")
+	}
+}
+
+func TestMergeYamlAndRuleMatchTester(t *testing.T) {
+	dir := t.TempDir()
+	C2.SetHomeDir(dir)
+	t.Cleanup(func() {
+		closeAllConnectionsInternal()
+		executor.Shutdown()
+		_ = cachefile.Cache().Close()
+	})
+
+	yamlContent := `
+proxies:
+  - name: "KR-01"
+    type: socks5
+    server: 127.0.0.1
+    port: 10808
+proxy-groups:
+  - name: "AUTO"
+    type: select
+    proxies:
+      - KR-01
+  - name: "PROXY"
+    type: select
+    proxies:
+      - AUTO
+      - DIRECT
+rules:
+  - DOMAIN-SUFFIX,base.example,PROXY
+  - MATCH,PROXY
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mergeYaml := `
+prepend-proxies:
+  - name: "Custom-US"
+    type: socks5
+    server: 127.0.0.1
+    port: 10809
+prepend-rules:
+  - DOMAIN-SUFFIX,openai.com,PROXY
+append-rules:
+  - DOMAIN-KEYWORD,internal,DIRECT
+`
+	ovBytes, _ := json.Marshal(map[string]any{
+		"mode":         "rule",
+		"mergeYaml":    mergeYaml,
+		"prependRules": []string{"DOMAIN,top.example,REJECT"},
+	})
+	rawCfg, err := resolveAndPatchConfig(dir, string(ovBytes))
+	if err != nil {
+		t.Fatalf("resolveAndPatchConfig with MergeYaml failed: %v", err)
+	}
+	if len(rawCfg.Proxy) != 2 || rawCfg.Proxy[0]["name"] != "Custom-US" {
+		t.Fatalf("expected prepended proxy Custom-US, got %+v", rawCfg.Proxy)
+	}
+	cfg, err := config.ParseRawConfig(rawCfg)
+	if err != nil {
+		t.Fatalf("ParseRawConfig failed: %v", err)
+	}
+	applyConfigAndCloseConnections(cfg)
+
+	// Leaf resolution across nested groups: PROXY -> AUTO -> KR-01
+	leaf := resolveLeafNow(tunnel.Proxies(), "PROXY")
+	if leaf != "KR-01" {
+		t.Fatalf("expected nested leaf KR-01, got %s", leaf)
+	}
+
+	// Match rule tester
+	hit := matchRuleForQuery("api.openai.com", "", "443", "tcp", "")
+	if !hit.Matched || hit.Adapter != "PROXY" || hit.Payload != "openai.com" || len(hit.Chain) < 2 {
+		t.Fatalf("unexpected rule match result: %+v", hit)
+	}
+	hitAppend := matchRuleForQuery("git.internal.corp", "", "443", "tcp", "")
+	if !hitAppend.Matched || hitAppend.Adapter != "DIRECT" || hitAppend.RuleType != "DomainKeyword" {
+		t.Fatalf("expected append-rule hit before MATCH, got: %+v", hitAppend)
+	}
+
+	// Invalid merge YAML must return an error cleanly
+	badOv, _ := json.Marshal(map[string]any{"mergeYaml": "prepend-rules: [broken"})
+	if _, err := resolveAndPatchConfig(dir, string(badOv)); err == nil {
+		t.Fatalf("expected error on invalid mergeYaml")
 	}
 }
 

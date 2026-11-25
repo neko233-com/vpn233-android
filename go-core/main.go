@@ -150,6 +150,21 @@ func goValidateConfig(profileDirC *C.char) *C.char {
 	return C.CString("")
 }
 
+//export goValidateConfigWithOverride
+func goValidateConfigWithOverride(profileDirC, overrideJsonC *C.char) *C.char {
+	profileDir := C.GoString(profileDirC)
+	overrideJson := C.GoString(overrideJsonC)
+	rawCfg, err := resolveAndPatchConfig(profileDir, overrideJson)
+	if err != nil {
+		return C.CString(err.Error())
+	}
+	if _, err := config.ParseRawConfig(rawCfg); err != nil {
+		return C.CString(err.Error())
+	}
+	runtime.GC()
+	return C.CString("")
+}
+
 //export goLoadConfig
 func goLoadConfig(profileDirC, overrideJsonC *C.char) *C.char {
 	profileDir := C.GoString(profileDirC)
@@ -313,6 +328,7 @@ type proxyGroupDTO struct {
 	Name       string         `json:"name"`
 	Type       string         `json:"type"`
 	Now        string         `json:"now"`
+	LeafNow    string         `json:"leafNow"`
 	Icon       string         `json:"icon"`
 	Selectable bool           `json:"selectable"`
 	Proxies    []proxyNodeDTO `json:"proxies"`
@@ -405,6 +421,7 @@ func goQueryGroupsJson(testUrlC *C.char) *C.char {
 			Name:       p.Name(),
 			Type:       p.Type().String(),
 			Now:        g.Now(),
+			LeafNow:    resolveLeafNow(allProxies, p.Name()),
 			Icon:       g.Icon(),
 			Selectable: p.Type() == C2.Selector,
 			Proxies:    nodes,
@@ -412,6 +429,28 @@ func goQueryGroupsJson(testUrlC *C.char) *C.char {
 	}
 	b, _ := json.Marshal(payload)
 	return C.CString(string(b))
+}
+
+//export goMatchRuleJson
+func goMatchRuleJson(hostC, dstIpC, dstPortC, networkC, processC *C.char) *C.char {
+	res := matchRuleForQuery(
+		C.GoString(hostC),
+		C.GoString(dstIpC),
+		C.GoString(dstPortC),
+		C.GoString(networkC),
+		C.GoString(processC),
+	)
+	b, _ := json.Marshal(res)
+	return C.CString(string(b))
+}
+
+//export goFlushDnsCache
+func goFlushDnsCache() *C.char {
+	dns.FlushCacheWithDefaultResolver()
+	if err := flushDnsAndFakeIPInternal(); err != nil {
+		return C.CString(err.Error())
+	}
+	return C.CString("")
 }
 
 //export goQueryRulesJson
@@ -489,13 +528,22 @@ func goQueryTrafficJson() *C.char {
 	upNow, downNow := statistic.DefaultManager.Now()
 	upTotal, downTotal := statistic.DefaultManager.Total()
 	mem := statistic.DefaultManager.Memory()
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	connCount := 0
+	statistic.DefaultManager.Range(func(statistic.Tracker) bool {
+		connCount++
+		return true
+	})
 	resp := struct {
 		UpNow     int64  `json:"upNow"`
 		DownNow   int64  `json:"downNow"`
 		UpTotal   int64  `json:"upTotal"`
 		DownTotal int64  `json:"downTotal"`
 		Memory    uint64 `json:"memory"`
-	}{upNow, downNow, upTotal, downTotal, mem}
+		HeapBytes uint64 `json:"heapBytes"`
+		ConnCount int    `json:"connCount"`
+	}{upNow, downNow, upTotal, downTotal, mem, ms.HeapInuse, connCount}
 	b, _ := json.Marshal(resp)
 	return C.CString(string(b))
 }
