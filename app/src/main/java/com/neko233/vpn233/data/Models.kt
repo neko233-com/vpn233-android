@@ -64,6 +64,26 @@ data class ProfileItem(
         get() = if (uploadBytes >= 0 && downloadBytes >= 0) uploadBytes + downloadBytes else -1L
 }
 
+enum class RulePosition(val label: String) {
+    PREPEND("前置最高优先"),
+    BEFORE_MATCH("兜底规则之前")
+}
+
+data class CustomRuleEntry(
+    val id: String,
+    val ruleLine: String,
+    val enabled: Boolean = true,
+    val position: RulePosition = RulePosition.PREPEND
+)
+
+data class RuleItem(
+    val index: Int,
+    val type: String,
+    val payload: String,
+    val adapter: String,
+    val raw: String
+)
+
 data class AppSettings(
     val routingMode: RoutingMode = RoutingMode.RULE,
     val tunStack: TunStackMode = TunStackMode.MIXED,
@@ -73,6 +93,7 @@ data class AppSettings(
     val appendSystemDns: Boolean = true,
     val forceDnsMapping: Boolean = false,
     val systemProxy: Boolean = true,
+    val allowLan: Boolean = false,
     val mixedPort: Int = 7890,
     val sniffing: Boolean = true,
     val overrideDestination: Boolean = true,
@@ -88,7 +109,9 @@ data class AppSettings(
     val autoStartOnBoot: Boolean = false,
     val delayTestUrl: String = "https://www.gstatic.com/generate_204",
     val customOverrideRules: List<String> = emptyList(),
+    val customRules: List<CustomRuleEntry> = emptyList(),
     val customDnsNameservers: List<String> = emptyList(),
+    val fakeIpFilterExtra: List<String> = emptyList(),
     val showTrafficInNotification: Boolean = true
 )
 

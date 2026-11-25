@@ -9,6 +9,7 @@ import com.neko233.vpn233.data.CoreLogEntry
 import com.neko233.vpn233.data.ProviderItem
 import com.neko233.vpn233.data.ProxyGroupUi
 import com.neko233.vpn233.data.ProxyNodeUi
+import com.neko233.vpn233.data.RuleItem
 import com.neko233.vpn233.data.TrafficStats
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -188,6 +189,28 @@ object MihomoBridge {
         }.getOrElse { "rule" to emptyList() }
     }
 
+    fun queryRules(): List<RuleItem> {
+        val raw = nativeQueryRulesJson().str()
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            val list = ArrayList<RuleItem>(arr.length())
+            for (i in 0 until arr.length()) {
+                val r = arr.getJSONObject(i)
+                list.add(
+                    RuleItem(
+                        index = r.optInt("index", i),
+                        type = r.optString("type"),
+                        payload = r.optString("payload"),
+                        adapter = r.optString("adapter"),
+                        raw = r.optString("raw")
+                    )
+                )
+            }
+            list
+        }.getOrDefault(emptyList())
+    }
+
     fun selectProxy(group: String, proxy: String): Boolean =
         nativeSelectProxy(group.utf8(), proxy.utf8())
 
@@ -318,6 +341,7 @@ object MihomoBridge {
     @JvmStatic private external fun nativeSetMode(mode: ByteArray)
     @JvmStatic private external fun nativeGetMode(): ByteArray
     @JvmStatic private external fun nativeQueryGroupsJson(testUrl: ByteArray): ByteArray
+    @JvmStatic private external fun nativeQueryRulesJson(): ByteArray
     @JvmStatic private external fun nativeSelectProxy(group: ByteArray, proxy: ByteArray): Boolean
     @JvmStatic private external fun nativeTestGroupDelay(group: ByteArray, testUrl: ByteArray, timeoutMs: Int): ByteArray
     @JvmStatic private external fun nativeTestProxyDelay(proxy: ByteArray, testUrl: ByteArray, timeoutMs: Int): Int

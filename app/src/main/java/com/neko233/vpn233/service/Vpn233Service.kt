@@ -154,11 +154,13 @@ class Vpn233Service : VpnService() {
             MihomoBridge.setMode(settings.routingMode.coreValue)
 
             var mixedBound = ""
-            if (settings.systemProxy || settings.mixedPort > 0) {
+            if (settings.systemProxy || settings.allowLan || settings.mixedPort > 0) {
                 val targetPort = if (settings.mixedPort in 1024..65535) settings.mixedPort else 0
-                val res = MihomoBridge.startMixed("127.0.0.1:$targetPort")
+                val bindHost = if (settings.allowLan) "0.0.0.0" else "127.0.0.1"
+                val res = MihomoBridge.startMixed("$bindHost:$targetPort")
                 if (!res.startsWith("ERR:") && res.isNotBlank()) {
-                    mixedBound = res
+                    val boundPort = res.substringAfterLast(':').toIntOrNull() ?: 0
+                    mixedBound = if (boundPort > 0) "127.0.0.1:$boundPort" else res
                 }
             }
 

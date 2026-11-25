@@ -124,6 +124,19 @@ class ProfileRepository(private val context: Context) {
         tmp.renameTo(metaFile)
     }
 
+    fun setAutoUpdateMinutes(id: String, minutes: Int) {
+        synchronized(lock) {
+            _profiles.value = _profiles.value.map {
+                if (it.id == id) it.copy(autoUpdateMinutes = minutes.coerceAtLeast(0)) else it
+            }
+            saveMeta()
+        }
+    }
+
+    fun findByIdOrName(idOrName: String): ProfileItem? {
+        return _profiles.value.firstOrNull { it.id == idOrName || it.name == idOrName }
+    }
+
     fun setActiveProfile(id: String) {
         synchronized(lock) {
             if (_profiles.value.any { it.id == id }) {
@@ -170,13 +183,14 @@ class ProfileRepository(private val context: Context) {
                 mkdirs()
             }
             try {
-                File(stageDir, "config.yaml").writeText(yamlContent, Charsets.UTF_8)
+                val normalizedYaml = SubscriptionParser.normalizeToClashYaml(yamlContent)
+                File(stageDir, "config.yaml").writeText(normalizedYaml, Charsets.UTF_8)
                 val err = MihomoBridge.validateConfig(stageDir.absolutePath)
                 if (err.isNotBlank()) {
                     throw IllegalArgumentException("配置校验失败: $err")
                 }
                 val destDir = getProfileDir(targetId)
-                File(destDir, "config.yaml").writeText(yamlContent, Charsets.UTF_8)
+                File(destDir, "config.yaml").writeText(normalizedYaml, Charsets.UTF_8)
                 val existing = _profiles.value.firstOrNull { it.id == targetId }
                 val item = (existing ?: ProfileItem(
                     id = targetId,
@@ -242,13 +256,14 @@ class ProfileRepository(private val context: Context) {
                 mkdirs()
             }
             try {
-                File(stageDir, "config.yaml").writeText(body, Charsets.UTF_8)
+                val normalizedYaml = SubscriptionParser.normalizeToClashYaml(body)
+                File(stageDir, "config.yaml").writeText(normalizedYaml, Charsets.UTF_8)
                 val err = MihomoBridge.validateConfig(stageDir.absolutePath)
                 if (err.isNotBlank()) {
                     throw IllegalArgumentException("订阅校验失败: $err")
                 }
                 val destDir = getProfileDir(id)
-                File(destDir, "config.yaml").writeText(body, Charsets.UTF_8)
+                File(destDir, "config.yaml").writeText(normalizedYaml, Charsets.UTF_8)
                 val item = ProfileItem(
                     id = id,
                     name = resolvedName,

@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.UUID
 
 class SettingsStore(context: Context) {
     private val baseDir = File(context.filesDir, "vpn233").apply { mkdirs() }
@@ -28,17 +29,46 @@ class SettingsStore(context: Context) {
                 val p = pkgArr.optString(i)
                 if (p.isNotBlank()) pkgs.add(p)
             }
-            val rules = ArrayList<String>()
+            val legacyRules = ArrayList<String>()
             val ruleArr = obj.optJSONArray("customOverrideRules") ?: JSONArray()
             for (i in 0 until ruleArr.length()) {
                 val r = ruleArr.optString(i)
-                if (r.isNotBlank()) rules.add(r)
+                if (r.isNotBlank()) legacyRules.add(r)
+            }
+            val customRules = ArrayList<CustomRuleEntry>()
+            val crArr = obj.optJSONArray("customRules")
+            if (crArr != null) {
+                for (i in 0 until crArr.length()) {
+                    val item = crArr.optJSONObject(i) ?: continue
+                    val line = item.optString("ruleLine").trim()
+                    if (line.isBlank()) continue
+                    customRules.add(
+                        CustomRuleEntry(
+                            id = item.optString("id").ifBlank { UUID.randomUUID().toString() },
+                            ruleLine = line,
+                            enabled = item.optBoolean("enabled", true),
+                            position = runCatching {
+                                RulePosition.valueOf(item.optString("position", RulePosition.PREPEND.name))
+                            }.getOrDefault(RulePosition.PREPEND)
+                        )
+                    )
+                }
+            } else if (legacyRules.isNotEmpty()) {
+                legacyRules.forEach { line ->
+                    customRules.add(CustomRuleEntry(UUID.randomUUID().toString(), line, true, RulePosition.PREPEND))
+                }
             }
             val dnsList = ArrayList<String>()
             val dnsArr = obj.optJSONArray("customDnsNameservers") ?: JSONArray()
             for (i in 0 until dnsArr.length()) {
                 val d = dnsArr.optString(i)
                 if (d.isNotBlank()) dnsList.add(d)
+            }
+            val fakeExtra = ArrayList<String>()
+            val fakeArr = obj.optJSONArray("fakeIpFilterExtra") ?: JSONArray()
+            for (i in 0 until fakeArr.length()) {
+                val f = fakeArr.optString(i)
+                if (f.isNotBlank()) fakeExtra.add(f)
             }
             AppSettings(
                 routingMode = RoutingMode.fromCore(obj.optString("routingMode", "rule")),
@@ -49,6 +79,7 @@ class SettingsStore(context: Context) {
                 appendSystemDns = obj.optBoolean("appendSystemDns", true),
                 forceDnsMapping = obj.optBoolean("forceDnsMapping", false),
                 systemProxy = obj.optBoolean("systemProxy", true),
+                allowLan = obj.optBoolean("allowLan", false),
                 mixedPort = obj.optInt("mixedPort", 7890),
                 sniffing = obj.optBoolean("sniffing", true),
                 overrideDestination = obj.optBoolean("overrideDestination", true),
@@ -67,8 +98,10 @@ class SettingsStore(context: Context) {
                 }.getOrDefault(ThemeMode.DARK),
                 autoStartOnBoot = obj.optBoolean("autoStartOnBoot", false),
                 delayTestUrl = obj.optString("delayTestUrl", "https://www.gstatic.com/generate_204"),
-                customOverrideRules = rules,
+                customOverrideRules = legacyRules,
+                customRules = customRules,
                 customDnsNameservers = dnsList,
+                fakeIpFilterExtra = fakeExtra,
                 showTrafficInNotification = obj.optBoolean("showTrafficInNotification", true)
             )
         }.getOrDefault(AppSettings())
@@ -93,6 +126,7 @@ class SettingsStore(context: Context) {
             put("appendSystemDns", s.appendSystemDns)
             put("forceDnsMapping", s.forceDnsMapping)
             put("systemProxy", s.systemProxy)
+            put("allowLan", s.allowLan)
             put("mixedPort", s.mixedPort)
             put("sniffing", s.sniffing)
             put("overrideDestination", s.overrideDestination)
@@ -108,7 +142,18 @@ class SettingsStore(context: Context) {
             put("autoStartOnBoot", s.autoStartOnBoot)
             put("delayTestUrl", s.delayTestUrl)
             put("customOverrideRules", JSONArray(s.customOverrideRules))
+            put("customRules", JSONArray().apply {
+                s.customRules.forEach { r ->
+                    put(JSONObject().apply {
+                        put("id", r.id)
+                        put("ruleLine", r.ruleLine)
+                        put("enabled", r.enabled)
+                        put("position", r.position.name)
+                    })
+                }
+            })
             put("customDnsNameservers", JSONArray(s.customDnsNameservers))
+            put("fakeIpFilterExtra", JSONArray(s.fakeIpFilterExtra))
             put("showTrafficInNotification", s.showTrafficInNotification)
         }
         val tmp = File(baseDir, "settings.json.tmp")
@@ -117,6 +162,15 @@ class SettingsStore(context: Context) {
     }
 
     fun toOverrideJson(s: AppSettings = _settings.value): String {
+        val prepend = s.customRules
+            .filter { it.enabled && it.position == RulePosition.PREPEND }
+            .map { it.ruleLine.trim() }
+            .filter { it.isNotEmpty() }
+        val append = s.customRules
+            .filter { it.enabled && it.position == RulePosition.BEFORE_MATCH }
+            .map { it.ruleLine.trim() }
+            .filter { it.isNotEmpty() }
+
         val obj = JSONObject().apply {
             put("mode", s.routingMode.coreValue)
             put("ipv6", s.allowIpv6)
@@ -129,11 +183,17 @@ class SettingsStore(context: Context) {
             put("sniffing", s.sniffing)
             put("overrideDestination", s.overrideDestination)
             put("logLevel", s.logLevel)
-            if (s.customOverrideRules.isNotEmpty()) {
-                put("prependRules", JSONArray(s.customOverrideRules))
+            if (prepend.isNotEmpty()) {
+                put("prependRules", JSONArray(prepend))
+            }
+            if (append.isNotEmpty()) {
+                put("appendRules", JSONArray(append))
             }
             if (s.customDnsNameservers.isNotEmpty()) {
                 put("nameServers", JSONArray(s.customDnsNameservers))
+            }
+            if (s.fakeIpFilterExtra.isNotEmpty()) {
+                put("fakeIpFilterExtra", JSONArray(s.fakeIpFilterExtra))
             }
         }
         return obj.toString()
