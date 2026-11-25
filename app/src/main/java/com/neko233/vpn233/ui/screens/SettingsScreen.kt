@@ -81,6 +81,7 @@ fun SettingsScreen(
     coreVersion: String,
     onUpdateSettings: (Boolean, (AppSettings) -> AppSettings) -> Unit,
     onLoadApps: () -> Unit,
+    onOpenRules: () -> Unit,
     onUpgradeGeoDb: () -> Unit,
     onResetGeoDb: () -> Unit,
     onExportAllBackup: () -> Unit,
@@ -88,7 +89,7 @@ fun SettingsScreen(
 ) {
     val p = LocalVpnPalette.current
     var showAppPicker by remember { mutableStateOf(false) }
-    var showOverrideEditor by remember { mutableStateOf(false) }
+    var showDnsEditor by remember { mutableStateOf(false) }
     var showDelayUrlEditor by remember { mutableStateOf(false) }
     var showPortEditor by remember { mutableStateOf(false) }
 
@@ -139,6 +140,9 @@ fun SettingsScreen(
             }
             ToggleRow("附加系统 HTTP 代理", "VpnService 通知应用本地 Mixed 代理端口", settings.systemProxy) { v ->
                 onUpdateSettings(true) { it.copy(systemProxy = v) }
+            }
+            ToggleRow("允许局域网共享 (Allow LAN)", "绑定 0.0.0.0 供同一 Wi-Fi 下其他设备连接", settings.allowLan) { v ->
+                onUpdateSettings(true) { it.copy(allowLan = v) }
             }
             ClickRow("本地 Mixed 端口", "当前: ${settings.mixedPort}") { showPortEditor = true }
             ToggleRow("允许其他应用绕过", "允许系统声明 allowBypass 的网络请求", settings.allowBypass) { v ->
@@ -225,9 +229,13 @@ fun SettingsScreen(
             }
             Spacer(Modifier.height(6.dp))
             ClickRow(
-                title = "自定义前置规则与 DNS 覆写",
-                subtitle = "前置规则 ${settings.customOverrideRules.size} 条 · 自定义 DNS ${settings.customDnsNameservers.size} 个"
-            ) { showOverrideEditor = true }
+                title = "分流规则编辑器 (支持全部类型与热重载)",
+                subtitle = "已配置 ${settings.customRules.count { it.enabled }} 条启用规则 · 共 ${settings.customRules.size} 条"
+            ) { onOpenRules() }
+            ClickRow(
+                title = "自定义 DNS 与 FakeIP 过滤覆盖",
+                subtitle = "DNS ${settings.customDnsNameservers.size} 个 · 额外 FakeIP 过滤 ${settings.fakeIpFilterExtra.size} 条"
+            ) { showDnsEditor = true }
             ClickRow("延迟测试 URL", settings.delayTestUrl) { showDelayUrlEditor = true }
         }
 
@@ -377,28 +385,28 @@ fun SettingsScreen(
         )
     }
 
-    if (showOverrideEditor) {
-        var rulesText by remember { mutableStateOf(settings.customOverrideRules.joinToString("\n")) }
+    if (showDnsEditor) {
+        var fakeText by remember { mutableStateOf(settings.fakeIpFilterExtra.joinToString("\n")) }
         var dnsText by remember { mutableStateOf(settings.customDnsNameservers.joinToString("\n")) }
         AlertDialog(
-            onDismissRequest = { showOverrideEditor = false },
+            onDismissRequest = { showDnsEditor = false },
             containerColor = p.card,
-            title = { Text("自定义覆写规则与 DNS", color = p.textPrimary) },
+            title = { Text("自定义 DNS 与 FakeIP 过滤", color = p.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
-                        value = rulesText,
-                        onValueChange = { rulesText = it },
-                        label = { Text("前置规则 (每行一条，如 DOMAIN-SUFFIX,example.com,DIRECT)") },
+                        value = dnsText,
+                        onValueChange = { dnsText = it },
+                        label = { Text("覆盖 NameServer (留空沿用配置，每行一个)") },
                         minLines = 3,
                         maxLines = 6,
                         textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
-                        value = dnsText,
-                        onValueChange = { dnsText = it },
-                        label = { Text("覆盖 NameServer (留空沿用配置，每行一个)") },
+                        value = fakeText,
+                        onValueChange = { fakeText = it },
+                        label = { Text("额外 FakeIP Filter 域名 (每行一个)") },
                         minLines = 2,
                         maxLines = 5,
                         textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
@@ -408,14 +416,14 @@ fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val rules = rulesText.lines().map { it.trim() }.filter { it.isNotEmpty() }
+                    val fake = fakeText.lines().map { it.trim() }.filter { it.isNotEmpty() }
                     val dns = dnsText.lines().map { it.trim() }.filter { it.isNotEmpty() }
-                    onUpdateSettings(true) { it.copy(customOverrideRules = rules, customDnsNameservers = dns) }
-                    showOverrideEditor = false
+                    onUpdateSettings(true) { it.copy(fakeIpFilterExtra = fake, customDnsNameservers = dns) }
+                    showDnsEditor = false
                 }) { Text("应用", color = p.accent) }
             },
             dismissButton = {
-                TextButton(onClick = { showOverrideEditor = false }) { Text("取消", color = p.textSecondary) }
+                TextButton(onClick = { showDnsEditor = false }) { Text("取消", color = p.textSecondary) }
             }
         )
     }

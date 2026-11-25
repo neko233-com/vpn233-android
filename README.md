@@ -1,43 +1,100 @@
 # vpn233 (`vpn233-android`)
 
-Modern, ultra-low-power, compact **arm64-v8a** Android proxy client powered by **Kotlin + Jetpack Compose** and **Mihomo (Clash.Meta v1.19.34)** core.
+English | [简体中文](README-CN.md)
 
-## Highlights
+A sleek, ultra-low-power, high-performance **arm64-v8a** Android proxy client written in **Kotlin + Jetpack Compose** and powered by the **Mihomo (Clash.Meta v1.19.34)** core.
 
-- **Ultra-Low Power & Background Reliability**:
-  - Screen-state aware monitoring: automatically halts JNI traffic polling, pauses notification binder updates, trims Go memory, and drops core log overhead when the screen turns off or app is swiped from Recents
-  - Zero `WAKE_LOCK` polling — packet forwarding runs purely event-driven in Go/kernel `epoll`
-  - `Mixed` / `System` / `gVisor` TUN stack with `MTU 9000`, `UDPTimeout 60s`, and default `find-process-mode: off` to avoid per-connection Binder IPC overhead
-  - One-tap battery optimization exemption prompt + Android Quick Settings Tile + boot auto-start
-- **Compact arm64-only APK (~16.75 MB)**:
-  - `arm64-v8a` ABI only (`libmihomo.so` built with `cmfa,with_gvisor,with_low_memory,no_easytier,no_tailscale,no_zerotier,no_fake_tcp`)
-  - R8 full minification + resource shrinking + custom vector icons (zero `material-icons-extended` bloat)
-  - Lightweight built-in GeoIP/GeoSite bootstrap (`~246 KB` compressed in APK) with 1-tap online upgrade to full GeoIP / GeoSite / ASN databases via jsDelivr
-- **Clash Subscription & Interaction Flow**:
-  - **Dashboard**: 1-tap connect orb, live upload/download sparkline, instant `Rule / Global / Direct` mode switching, subscription traffic quota bar, and quick actions
-  - **Proxies**: Horizontal strategy-group chips, instant search, sort by latency/name, 1-tap concurrent delay testing, and proxy/rule provider updates
-  - **Profiles**: Clash subscription URL import (parses `Subscription-Userinfo`, `Profile-Update-Interval`, `Content-Disposition`), smart clipboard auto-import, local `.yaml`/`.zip` import, `clash://` / `vpn233://` deep link support, built-in YAML editor with live core validation, and batch update
-  - **Live Monitor**: Real-time active connections & streaming core logs
+---
 
-## Build
+## Key Features
 
-### 1. Build Go Mihomo Core (`arm64-v8a`)
+- **Ultra-Low Power & Background Stability**:
+  - **Zero WakeLock architecture**: packet forwarding runs purely event-driven inside Go/Linux `epoll` without holding partial wake locks.
+  - **Screen-aware monitoring**: when the screen turns off (`ACTION_SCREEN_OFF`) or the app is swiped from Recents, JNI traffic polling and notification binder updates halt completely, log verbosity trims down to `WARNING`, and Go releases unused heap pages cleanly.
+  - **Low-overhead defaults**: `MTU 9000` jumbo TUN frames, `UDPTimeout 60s`, `Mixed` TUN stack (kernel `System` TCP + `gVisor` UDP), and `find-process-mode: off` by default to eliminate per-connection Binder IPC overhead.
+  - **Background keep-alive**: 1-tap battery optimization exemption prompt (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`), Quick Settings Tile (`Vpn233TileService`), and boot auto-start (`Vpn233BootReceiver`).
+- **Compact `arm64-v8a` APK (~16.75 MB)**:
+  - `arm64-v8a` native ABI only (`libmihomo.so` compiled with `-tags "cmfa,with_gvisor,with_low_memory,no_easytier,no_tailscale,no_zerotier,no_fake_tcp"`, `-trimpath -ldflags="-s -w"`, and `llvm-strip --strip-unneeded`).
+  - R8 full minification, resource shrinking, `zh`/`en` locale filtering, and custom `ImageVector` icons (no `material-icons-extended` bloat).
+  - Lightweight bootstrap `geoip.metadb` + `geosite.dat` (`~246 KB` compressed in APK) with 1-tap online upgrade to full GeoIP / GeoSite / ASN databases via jsDelivr.
+- **Full Protocol, Subscription & Scenario Support**:
+  - Imports standard Clash / Mihomo YAML subscriptions (parses `Subscription-Userinfo`, `Profile-Update-Interval`, `Content-Disposition`), Base64 proxy lists, and share links (`vmess://`, `vless://`, `trojan://`, `ss://`, `hy2://`, `hysteria2://`, `tuic://`, `socks5://`).
+  - Built-in YAML editor with live core validation, batch subscription update, and `.zip` full backup export.
+  - Supports **Rule / Global / Direct** live mode switching, **Allow LAN** sharing (`0.0.0.0:<port>`), **IPv6** dual-stack, **Per-App Proxy** (allowlist/denylist with app icon search), **DNS Hijack**, **Sniffer**, **FakeIP**, and **Proxy/Rule Providers**.
+- **Interactive Rule Editor & Live Connection Actions**:
+  - Visual rule builder supporting `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-REGEX`, `IP-CIDR`, `IP-CIDR6`, `GEOIP`, `GEOSITE`, `IP-ASN`, `DST-PORT`, `PROCESS-NAME`, and raw `AND`/`OR`/`SUB-RULE` expressions with `no-resolve`, ordering (`PREPEND` or `BEFORE_MATCH`), toggle switches, and live hot-reload.
+  - Inspect all active core rules and create rules with 1 tap directly from any entry in **Active Connections**.
 
-Requires Go 1.25+ and Android NDK 27+.
+---
 
-- Windows (PowerShell):
-  ```powershell
-  .\scripts\build-core.ps1
-  ```
-- Linux / macOS:
-  ```bash
-  ./scripts\build-core.sh
-  ```
+## Agent / ADB Automation API
 
-### 2. Build Release APK
+`vpn233` exposes a synchronous, structured JSON control endpoint via `AgentControlProvider` (`content://com.neko233.vpn233.agent`).  
+For security, caller UID is strictly verified (`Process.SHELL_UID` / `ROOT_UID` / self UID only — third-party apps cannot invoke it).
 
 ```bash
-./gradlew assembleRelease
+# Check status, traffic, mode, profile & battery whitelist state
+adb shell content call --uri content://com.neko233.vpn233.agent --method status
+
+# Import Clash/Base64 subscription URL & activate
+adb shell content call --uri content://com.neko233.vpn233.agent --method import_url --arg "https://example.com/sub" --extra name:s:MySub
+
+# Import inline YAML (or app-accessible file path)
+adb shell content call --uri content://com.neko233.vpn233.agent --method import_yaml --arg "/sdcard/Android/data/com.neko233.vpn233/files/test.yaml" --extra name:s:LocalTest
+
+# Start / Stop / Reload VPN (requires prior user VPN consent if first launch)
+adb shell content call --uri content://com.neko233.vpn233.agent --method start
+adb shell content call --uri content://com.neko233.vpn233.agent --method stop
+adb shell content call --uri content://com.neko233.vpn233.agent --method reload
+
+# Switch routing mode (rule | global | direct)
+adb shell content call --uri content://com.neko233.vpn233.agent --method set_mode --arg rule
+
+# Query proxy groups, test delays, and switch node
+adb shell content call --uri content://com.neko233.vpn233.agent --method list_groups
+adb shell content call --uri content://com.neko233.vpn233.agent --method test_group --arg PROXY
+adb shell content call --uri content://com.neko233.vpn233.agent --method select_proxy --arg PROXY --extra proxy:s:HK-01
+
+# Manage rules dynamically (hot-reloads running core)
+adb shell content call --uri content://com.neko233.vpn233.agent --method list_rules
+adb shell content call --uri content://com.neko233.vpn233.agent --method add_rule --arg "DOMAIN-SUFFIX,openai.com,PROXY" --extra position:s:PREPEND
+adb shell content call --uri content://com.neko233.vpn233.agent --method toggle_rule --arg 0 --extra enabled:b:false
+adb shell content call --uri content://com.neko233.vpn233.agent --method remove_rule --arg 0
+
+# Inspect active connections, logs & settings
+adb shell content call --uri content://com.neko233.vpn233.agent --method connections
+adb shell content call --uri content://com.neko233.vpn233.agent --method logs
+adb shell content call --uri content://com.neko233.vpn233.agent --method set_setting --arg allowLan --extra value:s:true
+
+# Jump directly to a UI tab or Rules dialog
+adb shell am start -n com.neko233.vpn233/.MainActivity --es tab proxies
+adb shell am start -n com.neko233.vpn233/.MainActivity --ez open_rules true
 ```
 
-Output APK: `app/build/outputs/apk/release/app-release.apk`
+---
+
+## Build & Test
+
+### Prerequisites
+- JDK 17+
+- Android SDK (`compileSdk 36`, `build-tools 36.0.0`) & Android NDK 27+
+- Go 1.25+ (only needed if rebuilding `go-core` into `libmihomo.so`)
+
+### 1. Run Go Core Unit Tests & Build `libmihomo.so` (`arm64-v8a`)
+
+```bash
+cd go-core
+CGO_ENABLED=0 go test -v -tags "cmfa,with_gvisor,with_low_memory,no_easytier,no_tailscale,no_zerotier,no_fake_tcp" ./...
+```
+
+Rebuild native shared library:
+- **Windows**: `.\scripts\build-core.ps1`
+- **Linux / macOS**: `./scripts/build-core.sh`
+
+### 2. Run Android Unit Tests & Build Release APK
+
+```bash
+./gradlew testReleaseUnitTest assembleRelease
+```
+
+Release APK output: `app/build/outputs/apk/release/app-release.apk`

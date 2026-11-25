@@ -57,6 +57,7 @@ fun MonitorDialog(
     onRefreshConnections: () -> Unit,
     onCloseConnection: (String) -> Unit,
     onCloseAllConnections: () -> Unit,
+    onQuickAddRule: (String) -> Unit,
     onSetLogStreaming: (Boolean) -> Unit,
     onClearLogs: () -> Unit,
     onToast: (String) -> Unit,
@@ -66,6 +67,7 @@ fun MonitorDialog(
     val clipboard = LocalClipboardManager.current
     var tab by remember { mutableStateOf(0) } // 0 = Connections, 1 = Logs
     var logFilter by remember { mutableStateOf("ALL") }
+    var ruleTargetConn by remember { mutableStateOf<ConnectionItem?>(null) }
 
     DisposableEffect(Unit) {
         onSetLogStreaming(true)
@@ -217,6 +219,20 @@ fun MonitorDialog(
                                         }
                                     }
                                     Spacer(Modifier.width(8.dp))
+                                    Surface(
+                                        onClick = { ruleTargetConn = c },
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = p.cardElevated
+                                    ) {
+                                        Text(
+                                            "规则+",
+                                            color = p.accentSecondary,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(7.dp, 4.dp)
+                                        )
+                                    }
+                                    Spacer(Modifier.width(6.dp))
                                     Icon(
                                         AppIcons.Close,
                                         contentDescription = "关闭连接",
@@ -307,5 +323,62 @@ fun MonitorDialog(
                 }
             }
         }
+    }
+
+    ruleTargetConn?.let { c ->
+        val domain = c.host.trim()
+        val ip = c.dstIp.trim()
+        val quickOptions = buildList {
+            if (domain.isNotBlank() && !domain.all { it.isDigit() || it == '.' || it == ':' }) {
+                add("直连该域名" to "DOMAIN,$domain,DIRECT")
+                add("代理该域名" to "DOMAIN,$domain,PROXY")
+                add("拦截该域名" to "DOMAIN,$domain,REJECT")
+                val parts = domain.split('.')
+                if (parts.size >= 2) {
+                    val rootDom = "${parts[parts.size - 2]}.${parts.last()}"
+                    add("主域名直连 ($rootDom)" to "DOMAIN-SUFFIX,$rootDom,DIRECT")
+                    add("主域名代理 ($rootDom)" to "DOMAIN-SUFFIX,$rootDom,PROXY")
+                }
+            } else if (ip.isNotBlank()) {
+                val cidr = if (ip.contains(':')) "$ip/128" else "$ip/32"
+                add("直连该 IP" to "IP-CIDR,$cidr,DIRECT,no-resolve")
+                add("代理该 IP" to "IP-CIDR,$cidr,PROXY,no-resolve")
+                add("拦截该 IP" to "IP-CIDR,$cidr,REJECT,no-resolve")
+            }
+            if (c.process.isNotBlank()) {
+                add("进程直连 (${c.process})" to "PROCESS-NAME,${c.process},DIRECT")
+                add("进程代理 (${c.process})" to "PROCESS-NAME,${c.process},PROXY")
+            }
+        }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { ruleTargetConn = null },
+            containerColor = p.card,
+            title = { Text("快捷添加分流规则", color = p.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    quickOptions.forEach { (label, rule) ->
+                        Surface(
+                            onClick = {
+                                onQuickAddRule(rule)
+                                ruleTargetConn = null
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            color = p.cardElevated
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                                Text(label, color = p.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text(rule, color = p.textSecondary, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { ruleTargetConn = null }) {
+                    Text("取消", color = p.textSecondary)
+                }
+            }
+        )
     }
 }

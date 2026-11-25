@@ -42,6 +42,8 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -75,6 +77,7 @@ fun DashboardScreen(
     onToggleVpn: () -> Unit,
     onChangeMode: (RoutingMode) -> Unit,
     onOpenMonitor: () -> Unit,
+    onOpenRules: () -> Unit,
     onGoProxies: () -> Unit,
     onGoProfiles: () -> Unit,
     onQuickTest: () -> Unit
@@ -332,7 +335,11 @@ fun DashboardScreen(
                                 1.5.dp,
                                 if (running) p.accent else p.accent.copy(alpha = 0.5f)
                             ),
-                            modifier = Modifier.size(68.dp)
+                            modifier = Modifier
+                                .size(68.dp)
+                                .semantics {
+                                    contentDescription = if (running) "vpn233_disconnect" else "vpn233_connect"
+                                }
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
@@ -477,35 +484,50 @@ fun DashboardScreen(
             }
         }
 
-        // Quick Actions Row
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            QuickActionCard(
-                modifier = Modifier.weight(1f),
-                icon = AppIcons.Nodes,
-                title = "切换节点",
-                subtitle = if (groups.isNotEmpty()) "${groups.size} 个策略组" else "浏览节点",
-                tint = p.accent,
-                onClick = onGoProxies
-            )
-            QuickActionCard(
-                modifier = Modifier.weight(1f),
-                icon = AppIcons.SpeedBolt,
-                title = "一键测速",
-                subtitle = if (running) "当前主分组" else "启动后可用",
-                tint = p.accentSecondary,
-                onClick = { if (running) onQuickTest() else onGoProxies() }
-            )
-            QuickActionCard(
-                modifier = Modifier.weight(1f),
-                icon = AppIcons.ConfigDoc,
-                title = "配置管理",
-                subtitle = activeProfile?.name ?: "导入/迁移",
-                tint = p.warning,
-                onClick = onGoProfiles
-            )
+        // Quick Actions 2x2 Grid
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                QuickActionCard(
+                    modifier = Modifier.weight(1f),
+                    icon = AppIcons.Nodes,
+                    title = "切换节点",
+                    subtitle = if (groups.isNotEmpty()) "${groups.size} 个策略组" else "浏览节点",
+                    tint = p.accent,
+                    onClick = onGoProxies
+                )
+                QuickActionCard(
+                    modifier = Modifier.weight(1f),
+                    icon = AppIcons.SpeedBolt,
+                    title = "一键测速",
+                    subtitle = if (running) "当前主分组" else "启动后可用",
+                    tint = p.accentSecondary,
+                    onClick = { if (running) onQuickTest() else onGoProxies() }
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                QuickActionCard(
+                    modifier = Modifier.weight(1f),
+                    icon = AppIcons.Edit,
+                    title = "分流规则",
+                    subtitle = "自定义 ${settings.customRules.size} 条",
+                    tint = p.success,
+                    onClick = onOpenRules
+                )
+                QuickActionCard(
+                    modifier = Modifier.weight(1f),
+                    icon = AppIcons.ConfigDoc,
+                    title = "订阅配置",
+                    subtitle = activeProfile?.name ?: "导入订阅",
+                    tint = p.warning,
+                    onClick = onGoProfiles
+                )
+            }
         }
     }
 }

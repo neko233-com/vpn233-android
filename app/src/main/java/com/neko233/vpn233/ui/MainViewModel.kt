@@ -9,6 +9,7 @@ import com.neko233.vpn233.Vpn233Application
 import com.neko233.vpn233.core.MihomoBridge
 import com.neko233.vpn233.data.AppSettings
 import com.neko233.vpn233.data.ConnectionItem
+import com.neko233.vpn233.data.CustomRuleEntry
 import com.neko233.vpn233.data.GeoDbStatus
 import com.neko233.vpn233.data.InstalledAppInfo
 import com.neko233.vpn233.data.ProfileItem
@@ -16,6 +17,8 @@ import com.neko233.vpn233.data.ProfileSourceType
 import com.neko233.vpn233.data.ProviderItem
 import com.neko233.vpn233.data.ProxyGroupUi
 import com.neko233.vpn233.data.RoutingMode
+import com.neko233.vpn233.data.RuleItem
+import com.neko233.vpn233.data.RulePosition
 import com.neko233.vpn233.data.VpnStatus
 import com.neko233.vpn233.service.Vpn233Service
 import kotlinx.coroutines.CoroutineScope
@@ -50,6 +53,9 @@ class MainViewModel(private val app: Application) {
 
     private val _connections = MutableStateFlow<List<ConnectionItem>>(emptyList())
     val connections: StateFlow<List<ConnectionItem>> = _connections.asStateFlow()
+
+    private val _activeRules = MutableStateFlow<List<RuleItem>>(emptyList())
+    val activeRules: StateFlow<List<RuleItem>> = _activeRules.asStateFlow()
 
     private val _installedApps = MutableStateFlow<List<InstalledAppInfo>>(emptyList())
     val installedApps: StateFlow<List<InstalledAppInfo>> = _installedApps.asStateFlow()
@@ -190,6 +196,66 @@ class MainViewModel(private val app: Application) {
         scope.launch(Dispatchers.IO) {
             MihomoBridge.closeAllConnections()
             refreshConnections()
+        }
+    }
+
+    fun refreshActiveRules() {
+        if (vpnStatus.value != VpnStatus.RUNNING) {
+            _activeRules.value = emptyList()
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            _activeRules.value = MihomoBridge.queryRules()
+        }
+    }
+
+    fun addCustomRule(ruleLine: String, position: RulePosition = RulePosition.PREPEND) {
+        val cleaned = ruleLine.trim()
+        if (cleaned.isEmpty()) return
+        updateSettings(reloadIfRunning = true) { s ->
+            val entry = CustomRuleEntry(
+                id = java.util.UUID.randomUUID().toString(),
+                ruleLine = cleaned,
+                enabled = true,
+                position = position
+            )
+            s.copy(customRules = listOf(entry) + s.customRules)
+        }
+        _toastMessage.value = "已添加规则: $cleaned"
+    }
+
+    fun updateCustomRule(id: String, ruleLine: String, position: RulePosition) {
+        val cleaned = ruleLine.trim()
+        if (cleaned.isEmpty()) return
+        updateSettings(reloadIfRunning = true) { s ->
+            s.copy(customRules = s.customRules.map {
+                if (it.id == id) it.copy(ruleLine = cleaned, position = position) else it
+            })
+        }
+    }
+
+    fun toggleCustomRule(id: String, enabled: Boolean) {
+        updateSettings(reloadIfRunning = true) { s ->
+            s.copy(customRules = s.customRules.map {
+                if (it.id == id) it.copy(enabled = enabled) else it
+            })
+        }
+    }
+
+    fun moveCustomRule(fromIdx: Int, toIdx: Int) {
+        updateSettings(reloadIfRunning = true) { s ->
+            val list = s.customRules.toMutableList()
+            if (fromIdx in list.indices && toIdx in list.indices) {
+                val item = list.removeAt(fromIdx)
+                list.add(toIdx, item)
+            }
+            s.copy(customRules = list)
+        }
+    }
+
+    fun deleteCustomRule(id: String) {
+        updateSettings(reloadIfRunning = true) { s ->
+            s.copy(customRules = s.customRules.filterNot { it.id == id })
         }
     }
 

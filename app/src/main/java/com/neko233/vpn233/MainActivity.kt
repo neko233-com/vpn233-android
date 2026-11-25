@@ -67,6 +67,7 @@ import com.neko233.vpn233.ui.screens.DashboardScreen
 import com.neko233.vpn233.ui.screens.MonitorDialog
 import com.neko233.vpn233.ui.screens.ProfilesScreen
 import com.neko233.vpn233.ui.screens.ProxiesScreen
+import com.neko233.vpn233.ui.screens.RulesDialog
 import com.neko233.vpn233.ui.screens.SettingsScreen
 import com.neko233.vpn233.ui.theme.LocalVpnPalette
 import com.neko233.vpn233.ui.theme.Vpn233Theme
@@ -81,6 +82,8 @@ private enum class MainTab(val label: String, val icon: ImageVector) {
 class MainActivity : ComponentActivity() {
     private lateinit var viewModel: MainViewModel
     private val deepLinkUrl = mutableStateOf<String?>(null)
+    private val requestedTab = mutableStateOf<MainTab?>(null)
+    private val requestedOpenRules = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -111,7 +114,13 @@ class MainActivity : ComponentActivity() {
                 Vpn233AppRoot(
                     viewModel = viewModel,
                     prefillUrl = deepLinkUrl.value,
+                    requestedTab = requestedTab.value,
+                    requestedOpenRules = requestedOpenRules.value,
                     onConsumePrefillUrl = { deepLinkUrl.value = null },
+                    onConsumeNavRequest = {
+                        requestedTab.value = null
+                        requestedOpenRules.value = false
+                    },
                     onRequestStartVpn = { startWithPermission -> startWithPermission() }
                 )
             }
@@ -147,6 +156,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
+        intent?.getStringExtra("tab")?.let { tabName ->
+            requestedTab.value = when (tabName.lowercase()) {
+                "home" -> MainTab.HOME
+                "proxies" -> MainTab.PROXIES
+                "profiles" -> MainTab.PROFILES
+                "settings" -> MainTab.SETTINGS
+                else -> null
+            }
+        }
+        if (intent?.getBooleanExtra("open_rules", false) == true) {
+            requestedOpenRules.value = true
+        }
         val data: Uri = intent?.data ?: return
         if (data.host == "install-config") {
             val url = data.getQueryParameter("url")
@@ -161,7 +182,10 @@ class MainActivity : ComponentActivity() {
 private fun Vpn233AppRoot(
     viewModel: MainViewModel,
     prefillUrl: String?,
+    requestedTab: MainTab?,
+    requestedOpenRules: Boolean,
     onConsumePrefillUrl: () -> Unit,
+    onConsumeNavRequest: () -> Unit,
     onRequestStartVpn: (() -> Unit) -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -178,6 +202,7 @@ private fun Vpn233AppRoot(
     val groups by viewModel.groups.collectAsState()
     val providers by viewModel.providers.collectAsState()
     val connections by viewModel.connections.collectAsState()
+    val activeRules by viewModel.activeRules.collectAsState()
     val logs by viewModel.coreLogs.collectAsState()
     val geoDbStatus by viewModel.geoDbStatus.collectAsState()
     val installedApps by viewModel.installedApps.collectAsState()
@@ -187,6 +212,7 @@ private fun Vpn233AppRoot(
 
     var currentTab by remember { mutableStateOf(MainTab.HOME) }
     var showMonitor by remember { mutableStateOf(false) }
+    var showRules by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
@@ -212,6 +238,18 @@ private fun Vpn233AppRoot(
     LaunchedEffect(prefillUrl) {
         if (!prefillUrl.isNullOrBlank()) {
             currentTab = MainTab.PROFILES
+        }
+    }
+
+    LaunchedEffect(requestedTab, requestedOpenRules) {
+        if (requestedTab != null) {
+            currentTab = requestedTab
+        }
+        if (requestedOpenRules) {
+            showRules = true
+        }
+        if (requestedTab != null || requestedOpenRules) {
+            onConsumeNavRequest()
         }
     }
 
@@ -319,6 +357,7 @@ private fun Vpn233AppRoot(
                     onToggleVpn = ::toggleVpn,
                     onChangeMode = viewModel::setRoutingMode,
                     onOpenMonitor = { showMonitor = true },
+                    onOpenRules = { showRules = true },
                     onGoProxies = { currentTab = MainTab.PROXIES },
                     onGoProfiles = { currentTab = MainTab.PROFILES },
                     onQuickTest = {
@@ -366,6 +405,7 @@ private fun Vpn233AppRoot(
                     coreVersion = viewModel.coreVersion,
                     onUpdateSettings = viewModel::updateSettings,
                     onLoadApps = viewModel::loadInstalledAppsIfNeeded,
+                    onOpenRules = { showRules = true },
                     onUpgradeGeoDb = viewModel::upgradeGeoDatabases,
                     onResetGeoDb = viewModel::resetGeoDatabasesToLite,
                     onExportAllBackup = viewModel::exportAllBackup,
@@ -411,10 +451,26 @@ private fun Vpn233AppRoot(
             onRefreshConnections = viewModel::refreshConnections,
             onCloseConnection = viewModel::closeConnection,
             onCloseAllConnections = viewModel::closeAllConnections,
+            onQuickAddRule = { rule -> viewModel.addCustomRule(rule) },
             onSetLogStreaming = viewModel::setLogStreaming,
             onClearLogs = viewModel::clearLogs,
             onToast = viewModel::showToast,
             onDismiss = { showMonitor = false }
+        )
+    }
+
+    if (showRules) {
+        RulesDialog(
+            customRules = settings.customRules,
+            activeRules = activeRules,
+            groups = groups,
+            onRefreshActiveRules = viewModel::refreshActiveRules,
+            onAddRule = viewModel::addCustomRule,
+            onUpdateRule = viewModel::updateCustomRule,
+            onToggleRule = viewModel::toggleCustomRule,
+            onMoveRule = viewModel::moveCustomRule,
+            onDeleteRule = viewModel::deleteCustomRule,
+            onDismiss = { showRules = false }
         )
     }
 }
