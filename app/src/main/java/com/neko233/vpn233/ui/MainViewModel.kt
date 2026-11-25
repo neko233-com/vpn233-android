@@ -393,6 +393,29 @@ class MainViewModel(private val app: Application) {
         }
     }
 
+    fun saveGlobalMergeYaml(globalMergeYaml: String) {
+        scope.launch {
+            _busyMessage.value = "正在校验全局 Merge 覆写..."
+            try {
+                val res = vpnApp.profileRepository.validateGlobalMergeYaml(globalMergeYaml) { gm ->
+                    val candidate = settings.value.copy(globalMergeYaml = gm)
+                    val activeMerge = vpnApp.profileRepository.getActiveProfile()
+                        ?.let { vpnApp.profileRepository.readMergeYaml(it.id) }
+                        .orEmpty()
+                    vpnApp.settingsStore.toOverrideJson(candidate, activeMerge)
+                }
+                res.onSuccess {
+                    updateSettings(reloadIfRunning = true) { it.copy(globalMergeYaml = globalMergeYaml.trim()) }
+                    _toastMessage.value = if (globalMergeYaml.isBlank()) "已清空全局 Merge 覆写" else "已保存并应用全局 Merge 覆写"
+                }.onFailure { err ->
+                    _toastMessage.value = err.message ?: "保存全局 Merge 失败"
+                }
+            } finally {
+                _busyMessage.value = null
+            }
+        }
+    }
+
     fun setProfileUpdateOptions(
         id: String,
         autoUpdateMinutes: Int,

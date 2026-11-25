@@ -19,7 +19,7 @@ A sleek, ultra-low-power, high-performance **arm64-v8a** Android proxy client wr
   - Lightweight bootstrap `geoip.metadb` + `geosite.dat` (`~246 KB` compressed in APK) with 1-tap online upgrade to full GeoIP / GeoSite / ASN databases via jsDelivr.
 - **Full Protocol, Subscription & Scenario Support**:
   - Imports standard Clash / Mihomo YAML subscriptions (parses `Subscription-Userinfo`, `Profile-Update-Interval`, `Content-Disposition`), Base64 proxy lists, and share links (`vmess://`, `vless://`, `trojan://`, `ss://`, `hy2://`, `hysteria2://`, `tuic://`, `socks5://`) with **idempotent deduplication** (repeated URL, file, ZIP, clipboard, or ADB imports update in-place without duplicates or needless tunnel resets).
-  - **Per-Profile YAML Merge & Auto-Update Policies**: Clash Verge style per-profile `merge.yaml` overrides (`prepend-rules`, `append-rules`, `prepend-proxies`, `prepend-proxy-groups`, `nameserver`) preserved across subscription updates & backups; configurable auto-update intervals (checked cleanly on wake/foreground with zero sleep wakeups), custom `User-Agent`, and `Auto` / `Proxy` / `Direct` fetch routing.
+  - **Global & Per-Profile YAML Merge & Auto-Update Policies**: Clash Verge style global Merge (`globalMergeYaml`, applied across every profile) plus per-profile `merge.yaml` overrides (`prepend-rules`, `append-rules`, `prepend-proxies`, `prepend-proxy-groups`, `nameserver`, `fake-ip-filter`, `nameserver-policy`) preserved across subscription updates & backups; configurable auto-update intervals (checked cleanly on wake/foreground with zero sleep wakeups), custom `User-Agent`, and `Auto` / `Proxy` / `Direct` fetch routing.
   - **Diagnostics, Rule-Match Tester & Network Resilience**: built-in **Diagnostics** tab to simulate any domain/IP:port against live Mihomo rules & view exact outbound chains, verify exit IP/country, flush DNS & FakeIP caches, display LAN `IP:port` copy pills, switch between **ZH / EN** UI live, use launcher **App Shortcuts**, and auto-close stale half-open sockets on Wi-Fi ↔ 5G switches.
   - Hot-switching active profiles (`activate_profile` / UI), switching proxy nodes (e.g. Korea → USA), or changing routing mode automatically **closes all previous active connections** so no stale sockets remain pinned to the prior route.
   - Built-in YAML editor with live core validation, batch subscription update, and `.zip` full backup export.
@@ -62,10 +62,11 @@ adb shell content call --uri content://com.neko233.vpn233.agent --method test_gr
 adb shell content call --uri content://com.neko233.vpn233.agent --method test_proxy --arg US-01
 adb shell content call --uri content://com.neko233.vpn233.agent --method select_proxy --arg PROXY --extra proxy:s:US-01
 
-# Hot-switch profile (closes all previous connections and reloads) / Merge YAML / options / backup
+# Hot-switch profile (closes all previous connections and reloads) / Global & Per-Profile Merge YAML / options / backup
 adb shell content call --uri content://com.neko233.vpn233.agent --method activate_profile --arg MySub
 adb shell content call --uri content://com.neko233.vpn233.agent --method update_profile --arg MySub
 adb shell content call --uri content://com.neko233.vpn233.agent --method set_profile_options --arg MySub --extra autoUpdateMinutes:i:720 --extra updateMode:s:PROXY --extra ua:s:clash-verge/v2.2.3
+adb shell content call --uri content://com.neko233.vpn233.agent --method set_global_merge_yaml --extra yaml:s:/sdcard/Android/data/com.neko233.vpn233/cache/global_merge.yaml
 adb shell content call --uri content://com.neko233.vpn233.agent --method set_merge_yaml --arg MySub --extra yaml:s:"prepend-rules:\n  - DOMAIN-SUFFIX,openai.com,PROXY"
 adb shell content call --uri content://com.neko233.vpn233.agent --method export_backup
 

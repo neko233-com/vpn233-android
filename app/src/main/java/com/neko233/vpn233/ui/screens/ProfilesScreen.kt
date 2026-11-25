@@ -76,6 +76,8 @@ fun ProfilesScreen(
     onPickDocument: () -> Unit,
     onToast: (String) -> Unit,
     readYaml: (String) -> String,
+    globalMergeYaml: String = "",
+    onSaveGlobalMergeYaml: (String) -> Unit = {},
     onReadMergeYaml: (String) -> String = { "" },
     onSaveMergeYaml: (String, String) -> Unit = { _, _ -> },
     onSetUpdateOptions: (String, Int, ProfileUpdateMode, String) -> Unit = { _, _, _, _ -> }
@@ -95,6 +97,7 @@ fun ProfilesScreen(
     var editingYaml by remember { mutableStateOf("") }
 
     var mergeEditingItem by remember { mutableStateOf<ProfileItem?>(null) }
+    var editingGlobalMerge by remember { mutableStateOf(false) }
     var mergeText by remember { mutableStateOf("") }
 
     var optionsEditingItem by remember { mutableStateOf<ProfileItem?>(null) }
@@ -114,6 +117,22 @@ fun ProfilesScreen(
         ) {
             Text(str.profilesTitle, color = p.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(
+                    onClick = {
+                        mergeText = globalMergeYaml
+                        editingGlobalMerge = true
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (globalMergeYaml.isNotBlank()) p.accent.copy(alpha = 0.14f) else p.card,
+                    border = BorderStroke(1.dp, if (globalMergeYaml.isNotBlank()) p.accent.copy(alpha = 0.45f) else p.border)
+                ) {
+                    Text(
+                        str.globalMergeBtn,
+                        color = if (globalMergeYaml.isNotBlank()) p.accent else p.textSecondary,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                    )
+                }
                 if (profiles.any { it.url.isNotBlank() }) {
                     Surface(
                         onClick = onUpdateAll,
@@ -122,7 +141,7 @@ fun ProfilesScreen(
                         border = BorderStroke(1.dp, p.border)
                     ) {
                         Text(
-                            "全部更新",
+                            str.updateAllBtn,
                             color = p.accentSecondary,
                             fontSize = 12.sp,
                             modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp)
@@ -143,7 +162,7 @@ fun ProfilesScreen(
                     ) {
                         Icon(AppIcons.Plus, null, tint = Color(0xFF042117), modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("导入订阅", color = Color(0xFF042117), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(str.importSubBtn, color = Color(0xFF042117), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -627,73 +646,28 @@ fun ProfilesScreen(
         )
     }
 
-    // Per-Profile Merge YAML Editor (Clash Verge Style)
-    mergeEditingItem?.let { item ->
-        Dialog(
-            onDismissRequest = { mergeEditingItem = null },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            Surface(
-                modifier = Modifier.fillMaxSize().padding(10.dp),
-                shape = RoundedCornerShape(20.dp),
-                color = p.bg,
-                border = BorderStroke(1.dp, p.border)
-            ) {
-                Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Merge 覆写 · ${item.name}", color = p.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Surface(
-                                onClick = { mergeEditingItem = null },
-                                shape = RoundedCornerShape(10.dp),
-                                color = p.card
-                            ) { Text("取消", color = p.textSecondary, modifier = Modifier.padding(12.dp, 7.dp)) }
-                            Surface(
-                                onClick = {
-                                    onSaveMergeYaml(item.id, mergeText)
-                                    mergeEditingItem = null
-                                },
-                                shape = RoundedCornerShape(10.dp),
-                                color = p.accent
-                            ) {
-                                Text("校验并应用", color = Color(0xFF042117), fontWeight = FontWeight.Bold, modifier = Modifier.padding(12.dp, 7.dp))
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        ActionPill(icon = AppIcons.Plus, label = "插入模板", tint = p.accentSecondary) {
-                            if (mergeText.isBlank()) {
-                                mergeText = "prepend-rules:\n  - DOMAIN-SUFFIX,openai.com,PROXY\nappend-rules:\n  - DOMAIN-KEYWORD,internal,DIRECT\n"
-                            }
-                        }
-                        ActionPill(icon = AppIcons.Trash, label = "清空覆写", tint = p.danger) {
-                            mergeText = ""
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "支持 Clash Verge 语法: prepend-rules / append-rules / prepend-proxies / prepend-proxy-groups / nameserver，更新订阅后依然保留。",
-                        color = p.textSecondary,
-                        fontSize = 11.sp
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = mergeText,
-                        onValueChange = { mergeText = it },
-                        textStyle = TextStyle(color = p.textPrimary, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 16.sp),
-                        modifier = Modifier.fillMaxSize()
-                    )
+    // Shared Per-Profile or Global Merge YAML Editor (Clash Verge Style)
+    if (mergeEditingItem != null || editingGlobalMerge) {
+        val targetProfile = mergeEditingItem
+        val dialogTitle = if (targetProfile != null) "Merge 覆写 · ${targetProfile.name}" else "全局 Merge 覆写（全订阅生效）"
+        MergeEditorDialog(
+            title = dialogTitle,
+            mergeText = mergeText,
+            onMergeTextChange = { mergeText = it },
+            onSave = {
+                if (targetProfile != null) {
+                    onSaveMergeYaml(targetProfile.id, mergeText)
+                } else {
+                    onSaveGlobalMergeYaml(mergeText)
                 }
+                mergeEditingItem = null
+                editingGlobalMerge = false
+            },
+            onDismiss = {
+                mergeEditingItem = null
+                editingGlobalMerge = false
             }
-        }
+        )
     }
 
     // Per-Profile Auto Update & Proxy Options Dialog
@@ -765,6 +739,90 @@ fun ProfilesScreen(
                 TextButton(onClick = { optionsEditingItem = null }) { Text("取消", color = p.textSecondary) }
             }
         )
+    }
+}
+
+@Composable
+private fun MergeEditorDialog(
+    title: String,
+    mergeText: String,
+    onMergeTextChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val p = LocalVpnPalette.current
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize().padding(10.dp),
+            shape = RoundedCornerShape(20.dp),
+            color = p.bg,
+            border = BorderStroke(1.dp, p.border)
+        ) {
+            Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        title,
+                        color = p.textPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Surface(
+                            onClick = onDismiss,
+                            shape = RoundedCornerShape(10.dp),
+                            color = p.card
+                        ) { Text("取消", color = p.textSecondary, modifier = Modifier.padding(12.dp, 7.dp)) }
+                        Surface(
+                            onClick = onSave,
+                            shape = RoundedCornerShape(10.dp),
+                            color = p.accent
+                        ) {
+                            Text("校验并应用", color = Color(0xFF042117), fontWeight = FontWeight.Bold, modifier = Modifier.padding(12.dp, 7.dp))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ActionPill(icon = AppIcons.Plus, label = "插入模板", tint = p.accentSecondary) {
+                        if (mergeText.isBlank()) {
+                            onMergeTextChange(
+                                "prepend-rules:\n  - DOMAIN-SUFFIX,openai.com,PROXY\nappend-rules:\n  - DOMAIN-KEYWORD,internal,DIRECT\nfake-ip-filter:\n  - '*.lan'\n"
+                            )
+                        }
+                    }
+                    ActionPill(icon = AppIcons.Trash, label = "清空覆写", tint = p.danger) {
+                        onMergeTextChange("")
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "支持 Clash Verge 语法: prepend-rules / append-rules / prepend-proxies / prepend-proxy-groups / nameserver / fake-ip-filter / nameserver-policy，更新订阅后依然保留。",
+                    color = p.textSecondary,
+                    fontSize = 11.sp
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = mergeText,
+                    onValueChange = onMergeTextChange,
+                    textStyle = TextStyle(color = p.textPrimary, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 16.sp),
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
     }
 }
 

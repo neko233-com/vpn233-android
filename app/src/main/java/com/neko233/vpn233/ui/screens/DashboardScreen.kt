@@ -308,7 +308,7 @@ fun DashboardScreen(
                         }
                         Spacer(Modifier.height(10.dp))
                         Text(
-                            text = activeProfile?.name ?: "未配置节点文件",
+                            text = activeProfile?.name ?: str.noProfileTitle,
                             color = p.textPrimary,
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Bold,
@@ -317,10 +317,10 @@ fun DashboardScreen(
                         )
                         Spacer(Modifier.height(4.dp))
                         val nodeSubtitle = when {
-                            activeProfile == null -> "点击右侧或「配置」导入订阅"
-                            running && currentNodeName.isNotBlank() -> "当前出站: $currentNodeName"
-                            running -> "运行模式: ${settings.routingMode.labelZh}"
-                            else -> "点击右侧按钮一键连接"
+                            activeProfile == null -> str.noProfileSub
+                            running && currentNodeName.isNotBlank() -> "${str.outboundPrefix}: $currentNodeName"
+                            running -> "${str.modePrefix}: ${if (str.isEn) settings.routingMode.labelEn else settings.routingMode.labelZh}"
+                            else -> str.tapConnectHint
                         }
                         Text(
                             text = nodeSubtitle,
@@ -439,13 +439,13 @@ fun DashboardScreen(
                     MetricColumn(
                         label = str.downSpeed,
                         value = Vpn233Service.formatRate(traffic.downNow),
-                        sub = "总下载 ${Vpn233Service.formatBytes(traffic.downTotal)}",
+                        sub = "${str.totalDownPrefix} ${Vpn233Service.formatBytes(traffic.downTotal)}",
                         accent = p.accentSecondary
                     )
                     MetricColumn(
                         label = str.upSpeed,
                         value = Vpn233Service.formatRate(traffic.upNow),
-                        sub = "总上传 ${Vpn233Service.formatBytes(traffic.upTotal)}",
+                        sub = "${str.totalUpPrefix} ${Vpn233Service.formatBytes(traffic.upTotal)}",
                         accent = p.warning
                     )
                     MetricColumn(
@@ -456,7 +456,7 @@ fun DashboardScreen(
                         } else "--",
                         sub = if (running) {
                             "RSS ${Vpn233Service.formatBytes(traffic.memoryBytes)} · ${traffic.connCount} Conn"
-                        } else "待机",
+                        } else str.standbyText,
                         accent = p.accent
                     )
                 }
@@ -485,7 +485,7 @@ fun DashboardScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("订阅流量配额", color = p.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(str.subQuotaTitle, color = p.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Text(
                             text = "${Vpn233Service.formatBytes(used)} / ${Vpn233Service.formatBytes(activeProfile.totalBytes)}",
                             color = p.textSecondary,
@@ -507,7 +507,7 @@ fun DashboardScreen(
                         Spacer(Modifier.height(6.dp))
                         val expStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
                             .format(Date(activeProfile.expireEpochSec * 1000L))
-                        Text("到期时间: $expStr", color = p.textSecondary, fontSize = 11.sp)
+                        Text("${str.expirePrefix}: $expStr", color = p.textSecondary, fontSize = 11.sp)
                     }
                 }
             }
@@ -523,7 +523,7 @@ fun DashboardScreen(
                     modifier = Modifier.weight(1f),
                     icon = AppIcons.Nodes,
                     title = str.qaProxies,
-                    subtitle = if (groups.isNotEmpty()) "${groups.size} 个策略组" else "浏览节点",
+                    subtitle = if (groups.isNotEmpty()) str.groupsCountText(groups.size) else str.browseNodes,
                     tint = p.accent,
                     onClick = onGoProxies
                 )
@@ -531,7 +531,7 @@ fun DashboardScreen(
                     modifier = Modifier.weight(1f),
                     icon = AppIcons.SpeedBolt,
                     title = str.qaSpeedTest,
-                    subtitle = if (running) "当前主分组" else "启动后可用",
+                    subtitle = if (running) str.activeGroupLabel else str.availAfterStart,
                     tint = p.accentSecondary,
                     onClick = { if (running) onQuickTest() else onGoProxies() }
                 )
@@ -544,7 +544,7 @@ fun DashboardScreen(
                     modifier = Modifier.weight(1f),
                     icon = AppIcons.Edit,
                     title = str.qaRules,
-                    subtitle = "自定义 ${settings.customRules.size} 条",
+                    subtitle = str.customRulesCountText(settings.customRules.size),
                     tint = p.success,
                     onClick = onOpenRules
                 )
@@ -552,7 +552,7 @@ fun DashboardScreen(
                     modifier = Modifier.weight(1f),
                     icon = AppIcons.ConfigDoc,
                     title = str.qaProfiles,
-                    subtitle = activeProfile?.name ?: "导入订阅",
+                    subtitle = activeProfile?.name ?: str.importSubHint,
                     tint = p.warning,
                     onClick = onGoProfiles
                 )

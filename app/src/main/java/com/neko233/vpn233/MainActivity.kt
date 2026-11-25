@@ -419,6 +419,8 @@ private fun Vpn233AppRoot(
                     },
                     onToast = viewModel::showToast,
                     readYaml = viewModel::readProfileYaml,
+                    globalMergeYaml = settings.globalMergeYaml,
+                    onSaveGlobalMergeYaml = viewModel::saveGlobalMergeYaml,
                     onReadMergeYaml = viewModel::readMergeYaml,
                     onSaveMergeYaml = viewModel::saveMergeYaml,
                     onSetUpdateOptions = viewModel::setProfileUpdateOptions
