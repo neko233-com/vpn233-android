@@ -10,6 +10,7 @@ import android.provider.Settings
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,7 +51,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -62,13 +65,16 @@ import androidx.compose.ui.window.DialogProperties
 import com.neko233.vpn233.BuildConfig
 import com.neko233.vpn233.core.MihomoBridge
 import com.neko233.vpn233.data.AccessControlMode
+import com.neko233.vpn233.data.AppLanguage
 import com.neko233.vpn233.data.AppSettings
 import com.neko233.vpn233.data.GeoDbStatus
 import com.neko233.vpn233.data.InstalledAppInfo
+import com.neko233.vpn233.data.NetworkHelpers
 import com.neko233.vpn233.data.ThemeMode
 import com.neko233.vpn233.data.TunStackMode
 import com.neko233.vpn233.service.Vpn233Service
 import com.neko233.vpn233.ui.components.AppIcons
+import com.neko233.vpn233.ui.theme.LocalStrings
 import com.neko233.vpn233.ui.theme.LocalVpnPalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -88,6 +94,8 @@ fun SettingsScreen(
     onToast: (String) -> Unit
 ) {
     val p = LocalVpnPalette.current
+    val str = LocalStrings.current
+    val clipboard = LocalClipboardManager.current
     var showAppPicker by remember { mutableStateOf(false) }
     var showDnsEditor by remember { mutableStateOf(false) }
     var showDelayUrlEditor by remember { mutableStateOf(false) }
@@ -100,7 +108,7 @@ fun SettingsScreen(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text("设置与增强", color = p.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text(str.settingsTitle, color = p.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
 
         // 1. Network & TUN
         SectionCard("网络与 TUN 隧道") {
@@ -144,9 +152,38 @@ fun SettingsScreen(
             ToggleRow("允许局域网共享 (Allow LAN)", "绑定 0.0.0.0 供同一 Wi-Fi 下其他设备连接", settings.allowLan) { v ->
                 onUpdateSettings(true) { it.copy(allowLan = v) }
             }
+            if (settings.allowLan && settings.mixedPort > 0) {
+                val lanIps = remember(settings.allowLan, settings.mixedPort) {
+                    NetworkHelpers.getLanIpv4Addresses()
+                }
+                if (lanIps.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        lanIps.forEach { ip ->
+                            val ep = "$ip:${settings.mixedPort}"
+                            Surface(
+                                onClick = {
+                                    clipboard.setText(AnnotatedString(ep))
+                                    onToast("已复制局域网代理地址: $ep")
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                color = p.accent.copy(alpha = 0.14f),
+                                border = BorderStroke(1.dp, p.accent.copy(alpha = 0.45f))
+                            ) {
+                                Text("LAN: $ep (复制)", color = p.accent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(8.dp, 5.dp))
+                            }
+                        }
+                    }
+                }
+            }
             ClickRow("本地 Mixed 端口", "当前: ${settings.mixedPort}") { showPortEditor = true }
             ToggleRow("允许其他应用绕过", "允许系统声明 allowBypass 的网络请求", settings.allowBypass) { v ->
                 onUpdateSettings(true) { it.copy(allowBypass = v) }
+            }
+            ToggleRow("切网自动断开旧连接", "Wi-Fi 与 5G 切换时清理半开会话防卡顿", settings.disconnectOnNetworkChange) { v ->
+                onUpdateSettings(false) { it.copy(disconnectOnNetworkChange = v) }
             }
         }
 
@@ -352,6 +389,29 @@ fun SettingsScreen(
                     }
                 }
             }
+            Spacer(Modifier.height(10.dp))
+            Text("界面语言", color = p.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                AppLanguage.entries.forEach { lang ->
+                    val sel = settings.language == lang
+                    Surface(
+                        modifier = Modifier.weight(1f),
+                        onClick = { onUpdateSettings(false) { it.copy(language = lang) } },
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (sel) p.accent.copy(alpha = 0.18f) else p.cardElevated,
+                        border = if (sel) BorderStroke(1.dp, p.accent) else null
+                    ) {
+                        Text(
+                            lang.label,
+                            color = if (sel) p.accent else p.textPrimary,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(vertical = 8.dp).fillMaxWidth(),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.height(8.dp))
             ToggleRow("通知栏显示实时网速", "每秒刷新上传/下载速率", settings.showTrafficInNotification) { v ->
                 onUpdateSettings(false) { it.copy(showTrafficInNotification = v) }
@@ -394,6 +454,25 @@ fun SettingsScreen(
             title = { Text("自定义 DNS 与 FakeIP 过滤", color = p.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            "推荐混合 DoH" to listOf("https://dns.alidns.com/dns-query", "https://doh.pub/dns-query", "https://1.1.1.1/dns-query"),
+                            "阿里+腾讯 DoH" to listOf("https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"),
+                            "Cloudflare/Google" to listOf("https://1.1.1.1/dns-query", "https://dns.google/dns-query"),
+                            "恢复配置默认" to emptyList()
+                        ).forEach { (lbl, list) ->
+                            Surface(
+                                onClick = { dnsText = list.joinToString("\n") },
+                                shape = RoundedCornerShape(8.dp),
+                                color = p.cardElevated
+                            ) {
+                                Text(lbl, color = p.accentSecondary, fontSize = 11.sp, modifier = Modifier.padding(9.dp, 6.dp))
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = dnsText,
                         onValueChange = { dnsText = it },
@@ -585,6 +664,16 @@ private fun AppPickerDialog(
                                 fontSize = 11.sp,
                                 modifier = Modifier.padding(10.dp, 6.dp)
                             )
+                        }
+                        Surface(
+                            onClick = {
+                                val next = selectedPackages + filtered.map { it.packageName }
+                                onUpdateSelection(next)
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            color = p.card
+                        ) {
+                            Text("全选当前", color = p.accentSecondary, fontSize = 11.sp, modifier = Modifier.padding(10.dp, 6.dp))
                         }
                         Surface(
                             onClick = { onUpdateSelection(emptySet()) },

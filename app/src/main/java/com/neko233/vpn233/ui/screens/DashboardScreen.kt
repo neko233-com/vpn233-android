@@ -34,7 +34,14 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,6 +65,7 @@ import com.neko233.vpn233.data.VpnStatus
 import com.neko233.vpn233.service.Vpn233Service
 import com.neko233.vpn233.ui.components.AppIcons
 import com.neko233.vpn233.ui.components.TrafficSparkline
+import com.neko233.vpn233.ui.theme.LocalStrings
 import com.neko233.vpn233.ui.theme.LocalVpnPalette
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -83,9 +91,19 @@ fun DashboardScreen(
     onQuickTest: () -> Unit
 ) {
     val p = LocalVpnPalette.current
+    val str = LocalStrings.current
     val ctx = LocalContext.current
-    val pm = androidx.compose.runtime.remember { ctx.getSystemService(PowerManager::class.java) }
-    val ignoringBattery = androidx.compose.runtime.remember(pm, vpnStatus) {
+    val pm = remember { ctx.getSystemService(PowerManager::class.java) }
+    var resumeTick by remember { mutableIntStateOf(0) }
+    val lifecycleOwner = ctx as? LifecycleOwner
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) resumeTick++
+        }
+        lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose { lifecycleOwner?.lifecycle?.removeObserver(observer) }
+    }
+    val ignoringBattery = remember(pm, vpnStatus, resumeTick) {
         pm?.isIgnoringBatteryOptimizations(ctx.packageName) ?: true
     }
     val running = vpnStatus == VpnStatus.RUNNING
@@ -183,7 +201,7 @@ fun DashboardScreen(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = "连接/日志",
+                        text = str.monitorBtn,
                         color = p.textPrimary,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium
@@ -209,8 +227,9 @@ fun DashboardScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("关闭电池优化，确保息屏及后台稳定不断连", color = p.warning, fontSize = 11.sp)
-                    Text("去设置 →", color = p.warning, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text(str.batteryBanner, color = p.warning, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                    Spacer(Modifier.width(6.dp))
+                    Text(str.batteryGoSetting, color = p.warning, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -276,10 +295,10 @@ fun DashboardScreen(
                                 Spacer(Modifier.width(6.dp))
                                 Text(
                                     text = when (vpnStatus) {
-                                        VpnStatus.RUNNING -> "隧道已连接 · ${settings.tunStack.label}"
-                                        VpnStatus.STARTING -> "正在建立隧道..."
-                                        VpnStatus.STOPPING -> "正在断开..."
-                                        VpnStatus.STOPPED -> "未连接"
+                                        VpnStatus.RUNNING -> "${str.statusConnected} · ${settings.tunStack.label}"
+                                        VpnStatus.STARTING -> str.statusStarting
+                                        VpnStatus.STOPPING -> str.statusStopping
+                                        VpnStatus.STOPPED -> str.statusStopped
                                     },
                                     color = statusColor,
                                     fontSize = 11.sp,
@@ -383,8 +402,13 @@ fun DashboardScreen(
                             modifier = Modifier.padding(vertical = 10.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
+                            val modeText = when (mode) {
+                                RoutingMode.RULE -> str.modeRule
+                                RoutingMode.GLOBAL -> str.modeGlobal
+                                RoutingMode.DIRECT -> str.modeDirect
+                            }
                             Text(
-                                text = "${mode.labelZh}模式",
+                                text = modeText,
                                 color = if (selected) p.accent else p.textPrimary,
                                 fontSize = 13.sp,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
@@ -413,21 +437,26 @@ fun DashboardScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     MetricColumn(
-                        label = "↓ 下载速率",
+                        label = str.downSpeed,
                         value = Vpn233Service.formatRate(traffic.downNow),
                         sub = "总下载 ${Vpn233Service.formatBytes(traffic.downTotal)}",
                         accent = p.accentSecondary
                     )
                     MetricColumn(
-                        label = "↑ 上传速率",
+                        label = str.upSpeed,
                         value = Vpn233Service.formatRate(traffic.upNow),
                         sub = "总上传 ${Vpn233Service.formatBytes(traffic.upTotal)}",
                         accent = p.warning
                     )
                     MetricColumn(
-                        label = "核心内存",
-                        value = if (running) Vpn233Service.formatBytes(traffic.memoryBytes) else "--",
-                        sub = if (running) "已启用 ${settings.tunStack.label}" else "待机",
+                        label = str.coreMem,
+                        value = if (running) {
+                            val mem = if (traffic.heapBytes > 0L) traffic.heapBytes else traffic.memoryBytes
+                            Vpn233Service.formatBytes(mem)
+                        } else "--",
+                        sub = if (running) {
+                            "RSS ${Vpn233Service.formatBytes(traffic.memoryBytes)} · ${traffic.connCount} Conn"
+                        } else "待机",
                         accent = p.accent
                     )
                 }
@@ -493,7 +522,7 @@ fun DashboardScreen(
                 QuickActionCard(
                     modifier = Modifier.weight(1f),
                     icon = AppIcons.Nodes,
-                    title = "切换节点",
+                    title = str.qaProxies,
                     subtitle = if (groups.isNotEmpty()) "${groups.size} 个策略组" else "浏览节点",
                     tint = p.accent,
                     onClick = onGoProxies
@@ -501,7 +530,7 @@ fun DashboardScreen(
                 QuickActionCard(
                     modifier = Modifier.weight(1f),
                     icon = AppIcons.SpeedBolt,
-                    title = "一键测速",
+                    title = str.qaSpeedTest,
                     subtitle = if (running) "当前主分组" else "启动后可用",
                     tint = p.accentSecondary,
                     onClick = { if (running) onQuickTest() else onGoProxies() }
@@ -514,7 +543,7 @@ fun DashboardScreen(
                 QuickActionCard(
                     modifier = Modifier.weight(1f),
                     icon = AppIcons.Edit,
-                    title = "分流规则",
+                    title = str.qaRules,
                     subtitle = "自定义 ${settings.customRules.size} 条",
                     tint = p.success,
                     onClick = onOpenRules
@@ -522,7 +551,7 @@ fun DashboardScreen(
                 QuickActionCard(
                     modifier = Modifier.weight(1f),
                     icon = AppIcons.ConfigDoc,
-                    title = "订阅配置",
+                    title = str.qaProfiles,
                     subtitle = activeProfile?.name ?: "导入订阅",
                     tint = p.warning,
                     onClick = onGoProfiles

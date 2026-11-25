@@ -19,6 +19,8 @@
   - 内置精简版 `geoip.metadb` + `geosite.dat`（APK 内仅占用约 `246 KB`），支持设置页一键在线升级为完整版 GeoIP / GeoSite / ASN 数据库。
 - **全场景协议、订阅与网络适配**：
   - 支持标准 Clash / Mihomo YAML 订阅链接导入（自动解析 `Subscription-Userinfo` 流量配额、`Profile-Update-Interval` 与文件名）、Base64 订阅自动解码、常见节点分享链接直转 YAML（`vmess://`、`vless://`、`trojan://`、`ss://`、`hy2://`、`hysteria2://`、`tuic://`、`socks5://`），并支持 **幂等去重导入**（重复导入同 URL、同文件、ZIP、剪贴板或 ADB 配置不会重复生成条目）。
+  - **按配置独立 YAML Merge 与更新策略**：支持 Clash Verge 风格每配置 `merge.yaml` 局部覆写（`prepend-rules`、`append-rules`、`prepend-proxies`、`prepend-proxy-groups`、`nameserver`），订阅更新与 `.zip` 备份均持久保留；支持亮屏/前台自动更新周期、自定义 `User-Agent` 及 `自动 / 仅经代理 / 仅直连` 拉取通道。
+  - **规则命中诊断、出口 IP 检测与切网自愈**：监控弹窗内置 **诊断** 分页，可模拟测试任意域名/IP 命中的规则与最终出站链路、检测公网出口 IP、清理 DNS 与 FakeIP 缓存；开启 Allow LAN 自动展示并可 1 键复制局域网共享地址；Wi-Fi ↔ 5G 切换自动清理旧连接；支持中英实时切换与桌面 **App Shortcuts** 快捷入口。
   - 热切换配置文件、切换服务器节点（如韩国 → 美国）或切换路由模式时，自动 **断开先前所有活跃连接**，确保长连接与 UDP/QUIC 会话立即切换无残留。
   - 支持剪贴板智能识别、本地文件导入、内置 YAML 编辑器与内核级校验、全部订阅批量更新与 `.zip` 备份导出。
   - 完整支持 **规则 / 全局 / 直连** 实时切换、**允许局域网共享（Allow LAN）**、**IPv6 双栈**、**分应用代理（黑白名单 + 应用图标搜索）**、**DNS 劫持与系统物理 DNS 自动跟踪**、**Sniffer 流量嗅探**、**FakeIP** 与外部 **Proxy/Rule Providers**。
@@ -60,9 +62,11 @@ adb shell content call --uri content://com.neko233.vpn233.agent --method test_gr
 adb shell content call --uri content://com.neko233.vpn233.agent --method test_proxy --arg US-01
 adb shell content call --uri content://com.neko233.vpn233.agent --method select_proxy --arg PROXY --extra proxy:s:US-01
 
-# 7. 热切换配置文件（自动断开所有旧连接）/ 更新订阅 / 导出备份
+# 7. 热切换配置文件（自动断开所有旧连接）/ Merge 覆写 / 更新策略 / 备份导出
 adb shell content call --uri content://com.neko233.vpn233.agent --method activate_profile --arg 我的订阅
 adb shell content call --uri content://com.neko233.vpn233.agent --method update_profile --arg 我的订阅
+adb shell content call --uri content://com.neko233.vpn233.agent --method set_profile_options --arg 我的订阅 --extra autoUpdateMinutes:i:720 --extra updateMode:s:PROXY --extra ua:s:clash-verge/v2.2.3
+adb shell content call --uri content://com.neko233.vpn233.agent --method set_merge_yaml --arg 我的订阅 --extra yaml:s:"prepend-rules:\n  - DOMAIN-SUFFIX,openai.com,PROXY"
 adb shell content call --uri content://com.neko233.vpn233.agent --method export_backup
 
 # 8. 动态管理分流规则（添加/编辑/移动/开关/清空后自动断开旧连接并热重载核心）
@@ -74,13 +78,17 @@ adb shell content call --uri content://com.neko233.vpn233.agent --method toggle_
 adb shell content call --uri content://com.neko233.vpn233.agent --method remove_rule --arg 0
 adb shell content call --uri content://com.neko233.vpn233.agent --method clear_rules
 
-# 9. 查看外部资源、实时连接、日志、内存回收与动态修改设置
+# 9. 规则预检诊断、局域网地址查询、清理 DNS 缓存、实时连接、日志与动态设置
+adb shell content call --uri content://com.neko233.vpn233.agent --method test_match --arg api.openai.com --extra port:i:443 --extra network:s:tcp
+adb shell content call --uri content://com.neko233.vpn233.agent --method flush_dns
+adb shell content call --uri content://com.neko233.vpn233.agent --method lan_addresses
 adb shell content call --uri content://com.neko233.vpn233.agent --method list_providers
 adb shell content call --uri content://com.neko233.vpn233.agent --method connections
 adb shell content call --uri content://com.neko233.vpn233.agent --method close_all_connections
 adb shell content call --uri content://com.neko233.vpn233.agent --method logs
 adb shell content call --uri content://com.neko233.vpn233.agent --method force_gc
 adb shell content call --uri content://com.neko233.vpn233.agent --method set_setting --arg allowLan --extra value:s:true
+adb shell content call --uri content://com.neko233.vpn233.agent --method set_setting --arg language --extra value:s:zh
 
 # 10. 直接跳转指定页面或规则编辑器
 adb shell am start -n com.neko233.vpn233/.MainActivity --es tab proxies

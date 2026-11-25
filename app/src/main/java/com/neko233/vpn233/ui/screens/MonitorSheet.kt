@@ -20,7 +20,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
@@ -45,6 +49,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.neko233.vpn233.data.ConnectionItem
 import com.neko233.vpn233.data.CoreLogEntry
+import com.neko233.vpn233.data.MatchTestResult
+import com.neko233.vpn233.data.VpnStatus
 import com.neko233.vpn233.service.Vpn233Service
 import com.neko233.vpn233.ui.components.AppIcons
 import com.neko233.vpn233.ui.theme.LocalVpnPalette
@@ -52,22 +58,32 @@ import kotlinx.coroutines.delay
 
 @Composable
 fun MonitorDialog(
+    vpnStatus: VpnStatus = VpnStatus.STOPPED,
     connections: List<ConnectionItem>,
     logs: List<CoreLogEntry>,
+    matchResult: MatchTestResult? = null,
+    exitIpInfo: String? = null,
     onRefreshConnections: () -> Unit,
     onCloseConnection: (String) -> Unit,
     onCloseAllConnections: () -> Unit,
     onQuickAddRule: (String) -> Unit,
     onSetLogStreaming: (Boolean) -> Unit,
     onClearLogs: () -> Unit,
+    onTestMatch: (String, String, String) -> Unit = { _, _, _ -> },
+    onFlushDns: () -> Unit = {},
+    onCheckExitIp: () -> Unit = {},
     onToast: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val p = LocalVpnPalette.current
     val clipboard = LocalClipboardManager.current
-    var tab by remember { mutableStateOf(0) } // 0 = Connections, 1 = Logs
+    var tab by remember { mutableStateOf(0) } // 0 = Connections, 1 = Logs, 2 = Diagnostics
+    var connFilter by remember { mutableStateOf("") }
     var logFilter by remember { mutableStateOf("ALL") }
     var ruleTargetConn by remember { mutableStateOf<ConnectionItem?>(null) }
+    var testHost by remember { mutableStateOf("openai.com") }
+    var testPort by remember { mutableStateOf("443") }
+    var testNet by remember { mutableStateOf("tcp") }
 
     DisposableEffect(Unit) {
         onSetLogStreaming(true)
@@ -101,7 +117,7 @@ fun MonitorDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("活跃连接 (${connections.size})", "实时日志 (${logs.size})").forEachIndexed { idx, label ->
+                        listOf("连接 (${connections.size})", "日志 (${logs.size})", "诊断").forEachIndexed { idx, label ->
                             val selected = tab == idx
                             Surface(
                                 onClick = { tab = idx },
@@ -114,7 +130,7 @@ fun MonitorDialog(
                                     color = if (selected) Color(0xFF042117) else p.textPrimary,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp)
                                 )
                             }
                         }
@@ -141,7 +157,7 @@ fun MonitorDialog(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("按住或点右侧可单独断开连接", color = p.textSecondary, fontSize = 11.sp)
+                        Text("按域名/规则/进程过滤或断开连接", color = p.textSecondary, fontSize = 11.sp)
                         Surface(
                             onClick = onCloseAllConnections,
                             shape = RoundedCornerShape(10.dp),
@@ -156,13 +172,49 @@ fun MonitorDialog(
                             )
                         }
                     }
+                    Spacer(Modifier.height(6.dp))
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = p.card,
+                        border = BorderStroke(1.dp, p.border)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(AppIcons.Search, null, tint = p.textSecondary, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Box(modifier = Modifier.weight(1f)) {
+                                if (connFilter.isEmpty()) Text("过滤域名 / IP / 规则 / 链路...", color = p.textSecondary, fontSize = 11.sp)
+                                BasicTextField(
+                                    value = connFilter,
+                                    onValueChange = { connFilter = it },
+                                    singleLine = true,
+                                    textStyle = TextStyle(color = p.textPrimary, fontSize = 12.sp),
+                                    cursorBrush = SolidColor(p.accent),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(8.dp))
+                    val filteredConns = remember(connections, connFilter) {
+                        if (connFilter.isBlank()) connections
+                        else {
+                            val q = connFilter.trim()
+                            connections.filter {
+                                it.host.contains(q, true) || it.dstIp.contains(q, true) ||
+                                    it.rule.contains(q, true) || it.process.contains(q, true) ||
+                                    it.chains.any { c -> c.contains(q, true) }
+                            }
+                        }
+                    }
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(bottom = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(connections, key = { it.id }) { c ->
+                        items(filteredConns, key = { it.id }) { c ->
                             Surface(
                                 shape = RoundedCornerShape(14.dp),
                                 color = p.card,
@@ -245,7 +297,7 @@ fun MonitorDialog(
                             }
                         }
                     }
-                } else {
+                } else if (tab == 1) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -318,6 +370,95 @@ fun MonitorDialog(
                                 fontFamily = FontFamily.Monospace,
                                 lineHeight = 15.sp
                             )
+                        }
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(shape = RoundedCornerShape(16.dp), color = p.card, border = BorderStroke(1.dp, p.border)) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("规则命中模拟器 (Rule Match Tester)", color = p.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                OutlinedTextField(
+                                    value = testHost,
+                                    onValueChange = { testHost = it },
+                                    label = { Text("目标域名或 IP") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    OutlinedTextField(
+                                        value = testPort,
+                                        onValueChange = { testPort = it.filter { ch -> ch.isDigit() } },
+                                        label = { Text("端口") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    listOf("tcp", "udp").forEach { proto ->
+                                        val sel = testNet == proto
+                                        Surface(
+                                            onClick = { testNet = proto },
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = if (sel) p.accentSecondary else p.cardElevated
+                                        ) {
+                                            Text(
+                                                proto.uppercase(),
+                                                color = if (sel) Color(0xFF041C24) else p.textPrimary,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(12.dp, 10.dp)
+                                            )
+                                        }
+                                    }
+                                    Surface(
+                                        onClick = { onTestMatch(testHost, testPort.ifBlank { "443" }, testNet) },
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = p.accent
+                                    ) {
+                                        Text("测试", color = Color(0xFF042117), fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.padding(14.dp, 10.dp))
+                                    }
+                                }
+                                if (vpnStatus != VpnStatus.RUNNING) {
+                                    Text("开启隧道后可执行实时规则命中测算", color = p.textSecondary, fontSize = 11.sp)
+                                } else if (matchResult != null) {
+                                    Surface(shape = RoundedCornerShape(12.dp), color = p.cardElevated) {
+                                        Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                            Text("命中规则: ${matchResult.raw.ifBlank { matchResult.ruleType }}", color = p.accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                            Text("出站链路: ${matchResult.chain.joinToString(" → ").ifBlank { matchResult.adapter }}", color = p.textPrimary, fontSize = 12.sp)
+                                            if (matchResult.resolvedIp.isNotBlank()) {
+                                                Text("解析 IP: ${matchResult.resolvedIp}", color = p.textSecondary, fontSize = 11.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Surface(shape = RoundedCornerShape(16.dp), color = p.card, border = BorderStroke(1.dp, p.border)) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("出口 IP 与 DNS 缓存诊断", color = p.accentSecondary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Surface(
+                                        onClick = onCheckExitIp,
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = p.accentSecondary
+                                    ) {
+                                        Text("检测出口 IP", color = Color(0xFF041C24), fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.padding(12.dp, 8.dp))
+                                    }
+                                    Surface(
+                                        onClick = onFlushDns,
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = p.cardElevated,
+                                        border = BorderStroke(1.dp, p.border)
+                                    ) {
+                                        Text("清空 DNS / FakeIP 缓存", color = p.textPrimary, fontSize = 12.sp, modifier = Modifier.padding(12.dp, 8.dp))
+                                    }
+                                }
+                                if (!exitIpInfo.isNullOrBlank()) {
+                                    Text(exitIpInfo, color = p.textPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                }
+                            }
                         }
                     }
                 }

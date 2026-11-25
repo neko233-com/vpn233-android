@@ -3,6 +3,7 @@ package com.neko233.vpn233.ui.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,8 +18,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -47,8 +50,10 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.neko233.vpn233.data.ProfileItem
 import com.neko233.vpn233.data.ProfileSourceType
+import com.neko233.vpn233.data.ProfileUpdateMode
 import com.neko233.vpn233.service.Vpn233Service
 import com.neko233.vpn233.ui.components.AppIcons
+import com.neko233.vpn233.ui.theme.LocalStrings
 import com.neko233.vpn233.ui.theme.LocalVpnPalette
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -70,9 +75,13 @@ fun ProfilesScreen(
     onShareProfile: (ProfileItem) -> Unit,
     onPickDocument: () -> Unit,
     onToast: (String) -> Unit,
-    readYaml: (String) -> String
+    readYaml: (String) -> String,
+    onReadMergeYaml: (String) -> String = { "" },
+    onSaveMergeYaml: (String, String) -> Unit = { _, _ -> },
+    onSetUpdateOptions: (String, Int, ProfileUpdateMode, String) -> Unit = { _, _, _, _ -> }
 ) {
     val p = LocalVpnPalette.current
+    val str = LocalStrings.current
     val clipboard = LocalClipboardManager.current
 
     var showImportDialog by remember(prefillUrl) { mutableStateOf(!prefillUrl.isNullOrBlank()) }
@@ -85,6 +94,14 @@ fun ProfilesScreen(
     var editingName by remember { mutableStateOf("") }
     var editingYaml by remember { mutableStateOf("") }
 
+    var mergeEditingItem by remember { mutableStateOf<ProfileItem?>(null) }
+    var mergeText by remember { mutableStateOf("") }
+
+    var optionsEditingItem by remember { mutableStateOf<ProfileItem?>(null) }
+    var optIntervalMin by remember { mutableStateOf("0") }
+    var optMode by remember { mutableStateOf(ProfileUpdateMode.AUTO) }
+    var optUa by remember { mutableStateOf("") }
+
     var renamingItem by remember { mutableStateOf<ProfileItem?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deletingItem by remember { mutableStateOf<ProfileItem?>(null) }
@@ -95,7 +112,7 @@ fun ProfilesScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("订阅与配置", color = p.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(str.profilesTitle, color = p.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (profiles.any { it.url.isNotBlank() }) {
                     Surface(
@@ -331,7 +348,7 @@ fun ProfilesScreen(
 
                         Spacer(Modifier.height(10.dp))
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -339,16 +356,40 @@ fun ProfilesScreen(
                                 ActionPill(icon = AppIcons.Refresh, label = "更新", tint = p.accent) {
                                     onUpdateProfile(item)
                                 }
+                                ActionPill(
+                                    icon = AppIcons.SettingsGear,
+                                    label = if (item.autoUpdateMinutes > 0) "策略(${item.autoUpdateMinutes / 60}h)" else "策略",
+                                    tint = p.accentSecondary
+                                ) {
+                                    optionsEditingItem = item
+                                    optIntervalMin = item.autoUpdateMinutes.toString()
+                                    optMode = item.updateMode
+                                    optUa = item.customUserAgent
+                                }
                             }
                             ActionPill(icon = AppIcons.Edit, label = "编辑", tint = p.textPrimary) {
                                 editingItem = item
                                 editingName = item.name
                                 editingYaml = readYaml(item.id)
                             }
+                            ActionPill(
+                                icon = AppIcons.ShieldBolt,
+                                label = if (item.hasMergeYaml) "Merge*" else "Merge",
+                                tint = if (item.hasMergeYaml) p.accent else p.textPrimary
+                            ) {
+                                mergeEditingItem = item
+                                mergeText = onReadMergeYaml(item.id)
+                            }
                             ActionPill(icon = AppIcons.ExportShare, label = "导出", tint = p.textPrimary) {
                                 onShareProfile(item)
                             }
-                            Spacer(Modifier.weight(1f))
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Text(
                                 text = "重命名",
                                 color = p.textSecondary,
@@ -358,6 +399,7 @@ fun ProfilesScreen(
                                     renameText = item.name
                                 }.padding(4.dp)
                             )
+                            Spacer(Modifier.width(12.dp))
                             Icon(
                                 AppIcons.Trash,
                                 contentDescription = "删除",
@@ -581,6 +623,146 @@ fun ProfilesScreen(
             },
             dismissButton = {
                 TextButton(onClick = { deletingItem = null }) { Text("取消", color = p.textSecondary) }
+            }
+        )
+    }
+
+    // Per-Profile Merge YAML Editor (Clash Verge Style)
+    mergeEditingItem?.let { item ->
+        Dialog(
+            onDismissRequest = { mergeEditingItem = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize().padding(10.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = p.bg,
+                border = BorderStroke(1.dp, p.border)
+            ) {
+                Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Merge 覆写 · ${item.name}", color = p.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Surface(
+                                onClick = { mergeEditingItem = null },
+                                shape = RoundedCornerShape(10.dp),
+                                color = p.card
+                            ) { Text("取消", color = p.textSecondary, modifier = Modifier.padding(12.dp, 7.dp)) }
+                            Surface(
+                                onClick = {
+                                    onSaveMergeYaml(item.id, mergeText)
+                                    mergeEditingItem = null
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                color = p.accent
+                            ) {
+                                Text("校验并应用", color = Color(0xFF042117), fontWeight = FontWeight.Bold, modifier = Modifier.padding(12.dp, 7.dp))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ActionPill(icon = AppIcons.Plus, label = "插入模板", tint = p.accentSecondary) {
+                            if (mergeText.isBlank()) {
+                                mergeText = "prepend-rules:\n  - DOMAIN-SUFFIX,openai.com,PROXY\nappend-rules:\n  - DOMAIN-KEYWORD,internal,DIRECT\n"
+                            }
+                        }
+                        ActionPill(icon = AppIcons.Trash, label = "清空覆写", tint = p.danger) {
+                            mergeText = ""
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "支持 Clash Verge 语法: prepend-rules / append-rules / prepend-proxies / prepend-proxy-groups / nameserver，更新订阅后依然保留。",
+                        color = p.textSecondary,
+                        fontSize = 11.sp
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = mergeText,
+                        onValueChange = { mergeText = it },
+                        textStyle = TextStyle(color = p.textPrimary, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 16.sp),
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+        }
+    }
+
+    // Per-Profile Auto Update & Proxy Options Dialog
+    optionsEditingItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { optionsEditingItem = null },
+            containerColor = p.card,
+            title = { Text("更新策略 · ${item.name}", color = p.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text("自动更新周期（亮屏/回到前台检测，零后台耗电）", color = p.textSecondary, fontSize = 11.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                        listOf(0 to "关闭", 360 to "6h", 720 to "12h", 1440 to "24h").forEach { (mins, lbl) ->
+                            val sel = optIntervalMin == mins.toString()
+                            Surface(
+                                modifier = Modifier.weight(1f),
+                                onClick = { optIntervalMin = mins.toString() },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (sel) p.accent.copy(alpha = 0.2f) else p.cardElevated
+                            ) {
+                                Text(lbl, color = if (sel) p.accent else p.textPrimary, fontSize = 11.sp, modifier = Modifier.padding(8.dp))
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = optIntervalMin,
+                        onValueChange = { optIntervalMin = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("自定义间隔 (分钟，0=关闭)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text("拉取通道模式", color = p.textSecondary, fontSize = 11.sp)
+                    ProfileUpdateMode.entries.forEach { m ->
+                        val sel = optMode == m
+                        Surface(
+                            onClick = { optMode = m },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (sel) p.accentSecondary.copy(alpha = 0.18f) else p.cardElevated,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                m.labelZh,
+                                color = if (sel) p.accentSecondary else p.textPrimary,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = optUa,
+                        onValueChange = { optUa = it },
+                        label = { Text("自定义 User-Agent (留空默认 clash-verge)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val mins = optIntervalMin.toIntOrNull()?.coerceAtLeast(0) ?: 0
+                    onSetUpdateOptions(item.id, mins, optMode, optUa)
+                    optionsEditingItem = null
+                }) { Text("保存", color = p.accent, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { optionsEditingItem = null }) { Text("取消", color = p.textSecondary) }
             }
         )
     }

@@ -69,14 +69,15 @@ import com.neko233.vpn233.ui.screens.ProfilesScreen
 import com.neko233.vpn233.ui.screens.ProxiesScreen
 import com.neko233.vpn233.ui.screens.RulesDialog
 import com.neko233.vpn233.ui.screens.SettingsScreen
+import com.neko233.vpn233.ui.theme.LocalStrings
 import com.neko233.vpn233.ui.theme.LocalVpnPalette
 import com.neko233.vpn233.ui.theme.Vpn233Theme
 
-private enum class MainTab(val label: String, val icon: ImageVector) {
-    HOME("连接", AppIcons.ShieldBolt),
-    PROXIES("节点", AppIcons.Nodes),
-    PROFILES("配置", AppIcons.ConfigDoc),
-    SETTINGS("设置", AppIcons.SettingsGear)
+private enum class MainTab(val icon: ImageVector) {
+    HOME(AppIcons.ShieldBolt),
+    PROXIES(AppIcons.Nodes),
+    PROFILES(AppIcons.ConfigDoc),
+    SETTINGS(AppIcons.SettingsGear)
 }
 
 class MainActivity : ComponentActivity() {
@@ -84,6 +85,7 @@ class MainActivity : ComponentActivity() {
     private val deepLinkUrl = mutableStateOf<String?>(null)
     private val requestedTab = mutableStateOf<MainTab?>(null)
     private val requestedOpenRules = mutableStateOf(false)
+    private val requestedOpenMonitor = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -110,16 +112,18 @@ class MainActivity : ComponentActivity() {
                     ctrl.isAppearanceLightNavigationBars = !isDark
                 }
             }
-            Vpn233Theme(themeMode = settings.themeMode) {
+            Vpn233Theme(themeMode = settings.themeMode, language = settings.language) {
                 Vpn233AppRoot(
                     viewModel = viewModel,
                     prefillUrl = deepLinkUrl.value,
                     requestedTab = requestedTab.value,
                     requestedOpenRules = requestedOpenRules.value,
+                    requestedOpenMonitor = requestedOpenMonitor.value,
                     onConsumePrefillUrl = { deepLinkUrl.value = null },
                     onConsumeNavRequest = {
                         requestedTab.value = null
                         requestedOpenRules.value = false
+                        requestedOpenMonitor.value = false
                     },
                     onRequestStartVpn = { startWithPermission -> startWithPermission() }
                 )
@@ -135,6 +139,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.scanDropInImports()
+        viewModel.checkDueAutoUpdatesOnForeground()
         viewModel.refreshGroups()
     }
 
@@ -168,6 +173,9 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra("open_rules", false) == true) {
             requestedOpenRules.value = true
         }
+        if (intent?.getBooleanExtra("open_monitor", false) == true) {
+            requestedOpenMonitor.value = true
+        }
         val data: Uri = intent?.data ?: return
         if (data.host == "install-config") {
             val url = data.getQueryParameter("url")
@@ -184,12 +192,14 @@ private fun Vpn233AppRoot(
     prefillUrl: String?,
     requestedTab: MainTab?,
     requestedOpenRules: Boolean,
+    requestedOpenMonitor: Boolean,
     onConsumePrefillUrl: () -> Unit,
     onConsumeNavRequest: () -> Unit,
     onRequestStartVpn: (() -> Unit) -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val p = LocalVpnPalette.current
+    val str = LocalStrings.current
 
     val settings by viewModel.settings.collectAsState()
     val profiles by viewModel.profiles.collectAsState()
@@ -209,6 +219,8 @@ private fun Vpn233AppRoot(
     val busyMessage by viewModel.busyMessage.collectAsState()
     val toastMessage by viewModel.toastMessage.collectAsState()
     val testingGroup by viewModel.testingGroup.collectAsState()
+    val matchResult by viewModel.matchResult.collectAsState()
+    val exitIpInfo by viewModel.exitIpInfo.collectAsState()
 
     var currentTab by remember { mutableStateOf(MainTab.HOME) }
     var showMonitor by remember { mutableStateOf(false) }
@@ -241,14 +253,17 @@ private fun Vpn233AppRoot(
         }
     }
 
-    LaunchedEffect(requestedTab, requestedOpenRules) {
+    LaunchedEffect(requestedTab, requestedOpenRules, requestedOpenMonitor) {
         if (requestedTab != null) {
             currentTab = requestedTab
         }
         if (requestedOpenRules) {
             showRules = true
         }
-        if (requestedTab != null || requestedOpenRules) {
+        if (requestedOpenMonitor) {
+            showMonitor = true
+        }
+        if (requestedTab != null || requestedOpenRules || requestedOpenMonitor) {
             onConsumeNavRequest()
         }
     }
@@ -309,6 +324,12 @@ private fun Vpn233AppRoot(
                 ) {
                     MainTab.entries.forEach { tab ->
                         val selected = currentTab == tab
+                        val tabLabel = when (tab) {
+                            MainTab.HOME -> str.tabHome
+                            MainTab.PROXIES -> str.tabProxies
+                            MainTab.PROFILES -> str.tabProfiles
+                            MainTab.SETTINGS -> str.tabSettings
+                        }
                         Column(
                             modifier = Modifier
                                 .weight(1f)
@@ -320,13 +341,13 @@ private fun Vpn233AppRoot(
                         ) {
                             Icon(
                                 imageVector = tab.icon,
-                                contentDescription = tab.label,
+                                contentDescription = tabLabel,
                                 tint = if (selected) p.accent else p.textSecondary,
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(Modifier.height(3.dp))
                             Text(
-                                text = tab.label,
+                                text = tabLabel,
                                 color = if (selected) p.accent else p.textSecondary,
                                 fontSize = 11.sp,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
@@ -369,11 +390,13 @@ private fun Vpn233AppRoot(
                     vpnStatus = vpnStatus,
                     groups = groups,
                     providers = providers,
+                    pinnedNodes = settings.pinnedNodes,
                     testingGroup = testingGroup,
                     onRefresh = viewModel::refreshGroups,
                     onSelectProxy = viewModel::selectProxy,
                     onTestGroup = viewModel::testGroupDelay,
                     onTestSingle = viewModel::testSingleProxy,
+                    onTogglePin = viewModel::togglePinnedNode,
                     onUpdateProvider = viewModel::updateProvider,
                     onStartVpn = ::startVpnSafely
                 )
@@ -395,7 +418,10 @@ private fun Vpn233AppRoot(
                         docPickerLauncher.launch(arrayOf("*/*"))
                     },
                     onToast = viewModel::showToast,
-                    readYaml = viewModel::readProfileYaml
+                    readYaml = viewModel::readProfileYaml,
+                    onReadMergeYaml = viewModel::readMergeYaml,
+                    onSaveMergeYaml = viewModel::saveMergeYaml,
+                    onSetUpdateOptions = viewModel::setProfileUpdateOptions
                 )
 
                 MainTab.SETTINGS -> SettingsScreen(
@@ -446,14 +472,20 @@ private fun Vpn233AppRoot(
 
     if (showMonitor) {
         MonitorDialog(
+            vpnStatus = vpnStatus,
             connections = connections,
             logs = logs,
+            matchResult = matchResult,
+            exitIpInfo = exitIpInfo,
             onRefreshConnections = viewModel::refreshConnections,
             onCloseConnection = viewModel::closeConnection,
             onCloseAllConnections = viewModel::closeAllConnections,
             onQuickAddRule = { rule -> viewModel.addCustomRule(rule) },
             onSetLogStreaming = viewModel::setLogStreaming,
             onClearLogs = viewModel::clearLogs,
+            onTestMatch = viewModel::testRuleMatch,
+            onFlushDns = viewModel::flushDnsCache,
+            onCheckExitIp = viewModel::checkExitIp,
             onToast = viewModel::showToast,
             onDismiss = { showMonitor = false }
         )

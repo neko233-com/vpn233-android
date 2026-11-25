@@ -50,6 +50,7 @@ import com.neko233.vpn233.data.ProxyGroupUi
 import com.neko233.vpn233.data.ProxyNodeUi
 import com.neko233.vpn233.data.VpnStatus
 import com.neko233.vpn233.ui.components.AppIcons
+import com.neko233.vpn233.ui.theme.LocalStrings
 import com.neko233.vpn233.ui.theme.LocalVpnPalette
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -66,11 +67,13 @@ fun ProxiesScreen(
     vpnStatus: VpnStatus,
     groups: List<ProxyGroupUi>,
     providers: List<ProviderItem>,
+    pinnedNodes: Set<String> = emptySet(),
     testingGroup: String?,
     onRefresh: () -> Unit,
     onSelectProxy: (String, String) -> Unit,
     onTestGroup: (String) -> Unit,
     onTestSingle: (String) -> Unit,
+    onTogglePin: (String) -> Unit = {},
     onUpdateProvider: (String, String) -> Unit,
     onStartVpn: () -> Unit
 ) {
@@ -78,6 +81,7 @@ fun ProxiesScreen(
     var selectedGroupIndex by remember { mutableStateOf(0) }
     var searchText by remember { mutableStateOf("") }
     var sortMode by remember { mutableStateOf(NodeSortMode.DEFAULT) }
+    var onlyAvailable by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
 
     LaunchedEffect(vpnStatus) {
@@ -135,7 +139,7 @@ fun ProxiesScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("节点代理", color = p.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(LocalStrings.current.proxiesTitle, color = p.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (providers.isNotEmpty()) {
                     Surface(
@@ -257,8 +261,13 @@ fun ProxiesScreen(
                             maxLines = 1
                         )
                         if (grp.now.isNotBlank()) {
+                            val displayNow = if (grp.leafNow.isNotBlank() && grp.leafNow != grp.now) {
+                                "${grp.now} → ${grp.leafNow}"
+                            } else {
+                                grp.now
+                            }
                             Text(
-                                text = grp.now,
+                                text = displayNow,
                                 color = if (selected) Color(0xFF063827) else p.textSecondary,
                                 fontSize = 10.sp,
                                 maxLines = 1,
@@ -317,6 +326,20 @@ fun ProxiesScreen(
             }
 
             Surface(
+                onClick = { onlyAvailable = !onlyAvailable },
+                shape = RoundedCornerShape(12.dp),
+                color = if (onlyAvailable) p.accent.copy(alpha = 0.16f) else p.card,
+                border = BorderStroke(1.dp, if (onlyAvailable) p.accent else p.border)
+            ) {
+                Text(
+                    text = "可用",
+                    color = if (onlyAvailable) p.accent else p.textPrimary,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)
+                )
+            }
+
+            Surface(
                 onClick = {
                     val next = (sortMode.ordinal + 1) % NodeSortMode.entries.size
                     sortMode = NodeSortMode.entries[next]
@@ -337,21 +360,23 @@ fun ProxiesScreen(
         Spacer(Modifier.height(10.dp))
 
         if (currentGroup != null) {
-            val filteredNodes = remember(currentGroup, searchText, sortMode) {
-                val base = if (searchText.isBlank()) {
+            val filteredNodes = remember(currentGroup, searchText, sortMode, onlyAvailable, pinnedNodes) {
+                val searched = if (searchText.isBlank()) {
                     currentGroup.proxies
                 } else {
                     val q = searchText.trim()
                     currentGroup.proxies.filter { it.name.contains(q, ignoreCase = true) || it.type.contains(q, true) }
                 }
-                when (sortMode) {
-                    NodeSortMode.DEFAULT -> base
-                    NodeSortMode.NAME -> base.sortedBy { it.name.lowercase() }
-                    NodeSortMode.DELAY -> base.sortedWith(
-                        compareBy<ProxyNodeUi> { if (it.delay > 0) 0 else 1 }
-                            .thenBy { if (it.delay > 0) it.delay else Int.MAX_VALUE }
-                    )
+                val base = if (onlyAvailable) searched.filter { it.delay > 0 || it.isGroup } else searched
+                val comparator: Comparator<ProxyNodeUi> = when (sortMode) {
+                    NodeSortMode.DEFAULT -> compareByDescending { it.name in pinnedNodes }
+                    NodeSortMode.NAME -> compareByDescending<ProxyNodeUi> { it.name in pinnedNodes }
+                        .thenBy { it.name.lowercase() }
+                    NodeSortMode.DELAY -> compareByDescending<ProxyNodeUi> { it.name in pinnedNodes }
+                        .thenBy { if (it.delay > 0) 0 else 1 }
+                        .thenBy { if (it.delay > 0) it.delay else Int.MAX_VALUE }
                 }
+                base.sortedWith(comparator)
             }
 
             LazyVerticalGrid(
@@ -406,20 +431,29 @@ fun ProxiesScreen(
                                         maxLines = 1
                                     )
                                 }
-                                if (isSelected) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(18.dp)
-                                            .clip(CircleShape)
-                                            .background(p.accent),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            AppIcons.Check,
-                                            null,
-                                            tint = Color(0xFF042117),
-                                            modifier = Modifier.size(12.dp)
-                                        )
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    val isPinned = node.name in pinnedNodes
+                                    Text(
+                                        text = if (isPinned) "★" else "☆",
+                                        color = if (isPinned) p.warning else p.textSecondary,
+                                        fontSize = 13.sp,
+                                        modifier = Modifier.clickable { onTogglePin(node.name) }
+                                    )
+                                    if (isSelected) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(18.dp)
+                                                .clip(CircleShape)
+                                                .background(p.accent),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                AppIcons.Check,
+                                                null,
+                                                tint = Color(0xFF042117),
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }

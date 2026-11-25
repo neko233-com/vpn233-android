@@ -12,8 +12,10 @@ import com.neko233.vpn233.data.ConnectionItem
 import com.neko233.vpn233.data.CustomRuleEntry
 import com.neko233.vpn233.data.GeoDbStatus
 import com.neko233.vpn233.data.InstalledAppInfo
+import com.neko233.vpn233.data.MatchTestResult
 import com.neko233.vpn233.data.ProfileItem
 import com.neko233.vpn233.data.ProfileSourceType
+import com.neko233.vpn233.data.ProfileUpdateMode
 import com.neko233.vpn233.data.ProviderItem
 import com.neko233.vpn233.data.ProxyGroupUi
 import com.neko233.vpn233.data.RoutingMode
@@ -21,6 +23,10 @@ import com.neko233.vpn233.data.RuleItem
 import com.neko233.vpn233.data.RulePosition
 import com.neko233.vpn233.data.VpnStatus
 import com.neko233.vpn233.service.Vpn233Service
+import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.URL
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -71,6 +77,12 @@ class MainViewModel(private val app: Application) {
 
     private val _testingGroup = MutableStateFlow<String?>(null)
     val testingGroup: StateFlow<String?> = _testingGroup.asStateFlow()
+
+    private val _matchResult = MutableStateFlow<MatchTestResult?>(null)
+    val matchResult: StateFlow<MatchTestResult?> = _matchResult.asStateFlow()
+
+    private val _exitIpInfo = MutableStateFlow<String?>(null)
+    val exitIpInfo: StateFlow<String?> = _exitIpInfo.asStateFlow()
 
     val coreVersion: String by lazy { MihomoBridge.coreVersion() }
 
@@ -153,12 +165,59 @@ class MainViewModel(private val app: Application) {
         _testingGroup.value = groupName
         scope.launch(Dispatchers.IO) {
             try {
-                MihomoBridge.testGroupDelay(groupName, settings.value.delayTestUrl, 4500)
+                val delays = MihomoBridge.testGroupDelay(groupName, settings.value.delayTestUrl, 4500)
                 refreshGroups()
+                val ok = delays.values.count { it > 0 }
+                _toastMessage.value = "$groupName 测速完成: $ok/${delays.size} 可用"
             } finally {
                 _testingGroup.value = null
             }
         }
+    }
+
+    fun togglePinnedNode(nodeName: String) {
+        vpnApp.settingsStore.togglePinnedNode(nodeName)
+    }
+
+    fun testRuleMatch(host: String, dstPort: String = "443", network: String = "tcp") {
+        if (vpnStatus.value != VpnStatus.RUNNING || host.isBlank()) return
+        scope.launch(Dispatchers.IO) {
+            _matchResult.value = MihomoBridge.matchRule(host = host.trim(), dstPort = dstPort.trim(), network = network)
+        }
+    }
+
+    fun flushDnsCache() {
+        scope.launch(Dispatchers.IO) {
+            val err = MihomoBridge.flushDnsCache()
+            _toastMessage.value = if (err.isBlank()) "已清空 DNS 与 FakeIP 缓存" else "清理缓存失败: $err"
+        }
+    }
+
+    fun checkExitIp() {
+        scope.launch(Dispatchers.IO) {
+            _exitIpInfo.value = "正在检测出口 IP..."
+            val proxyPort = runningMixedPort()
+            val text = runCatching {
+                val proxy = if (proxyPort > 0) Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort)) else Proxy.NO_PROXY
+                val conn = (URL("https://api.ip.sb/geoip").openConnection(proxy) as HttpURLConnection).apply {
+                    connectTimeout = 8000
+                    readTimeout = 8000
+                    setRequestProperty("User-Agent", "vpn233/1.2")
+                }
+                val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val o = org.json.JSONObject(body)
+                "${o.optString("ip")} · ${o.optString("country")} (${o.optString("organization", o.optString("isp"))})"
+            }.getOrElse { err ->
+                "检测失败: ${err.message}"
+            }
+            _exitIpInfo.value = text
+        }
+    }
+
+    private fun runningMixedPort(): Int {
+        if (vpnStatus.value != VpnStatus.RUNNING) return 0
+        val p = settings.value.mixedPort
+        return if (p in 1024..65535) p else 0
     }
 
     fun testSingleProxy(proxyName: String) {
@@ -297,12 +356,59 @@ class MainViewModel(private val app: Application) {
         }
     }
 
+    fun checkDueAutoUpdatesOnForeground() {
+        scope.launch(Dispatchers.IO) {
+            val (count, activeChanged) = vpnApp.profileRepository.checkDueAutoUpdates(runningMixedPort())
+            if (count > 0) {
+                if (activeChanged && vpnStatus.value == VpnStatus.RUNNING) {
+                    MihomoBridge.closeAllConnections()
+                    Vpn233Service.reload(app)
+                }
+                _toastMessage.value = "后台已自动更新 $count 个订阅"
+            }
+        }
+    }
+
+    fun readMergeYaml(id: String): String = vpnApp.profileRepository.readMergeYaml(id)
+
+    fun saveMergeYaml(id: String, mergeYaml: String) {
+        scope.launch {
+            _busyMessage.value = "正在校验 Merge 覆写..."
+            try {
+                val res = vpnApp.profileRepository.saveMergeYaml(id, mergeYaml) { m ->
+                    vpnApp.settingsStore.toOverrideJson(settings.value, m)
+                }
+                res.onSuccess { item ->
+                    if (activeProfileId.value == item.id && vpnStatus.value == VpnStatus.RUNNING) {
+                        MihomoBridge.closeAllConnections()
+                        Vpn233Service.reload(app)
+                    }
+                    _toastMessage.value = "已保存「${item.name}」Merge 覆写"
+                }.onFailure { err ->
+                    _toastMessage.value = err.message ?: "保存 Merge 失败"
+                }
+            } finally {
+                _busyMessage.value = null
+            }
+        }
+    }
+
+    fun setProfileUpdateOptions(
+        id: String,
+        autoUpdateMinutes: Int,
+        updateMode: ProfileUpdateMode,
+        customUserAgent: String
+    ) {
+        vpnApp.profileRepository.setProfileUpdateOptions(id, autoUpdateMinutes, updateMode, customUserAgent)
+        _toastMessage.value = "已保存订阅更新策略"
+    }
+
     fun importFromUrl(url: String, name: String) {
         scope.launch {
             _busyMessage.value = "正在拉取并校验配置..."
             try {
                 val prevActiveId = activeProfileId.value
-                val res = vpnApp.profileRepository.importFromUrlWithResult(url, name)
+                val res = vpnApp.profileRepository.importFromUrlWithResult(url, name, runningProxyPort = runningMixedPort())
                 res.onSuccess { saveRes ->
                     val item = saveRes.item
                     vpnApp.profileRepository.setActiveProfile(item.id)
@@ -330,7 +436,7 @@ class MainViewModel(private val app: Application) {
         scope.launch {
             _busyMessage.value = "正在更新 ${item.name}..."
             try {
-                val res = vpnApp.profileRepository.importFromUrlWithResult(item.url, item.name, item.id)
+                val res = vpnApp.profileRepository.importFromUrlWithResult(item.url, item.name, item.id, runningMixedPort())
                 res.onSuccess { saveRes ->
                     if (activeProfileId.value == item.id && vpnStatus.value == VpnStatus.RUNNING && saveRes.contentChanged) {
                         MihomoBridge.closeAllConnections()
@@ -356,7 +462,7 @@ class MainViewModel(private val app: Application) {
             val curActive = activeProfileId.value
             try {
                 for (item in urlProfiles) {
-                    val res = vpnApp.profileRepository.importFromUrlWithResult(item.url, item.name, item.id)
+                    val res = vpnApp.profileRepository.importFromUrlWithResult(item.url, item.name, item.id, runningMixedPort())
                     res.onSuccess { saveRes ->
                         okCount++
                         if (item.id == curActive && saveRes.contentChanged) activeChanged = true
@@ -501,7 +607,7 @@ class MainViewModel(private val app: Application) {
         scope.launch {
             _busyMessage.value = "正在更新 Geo 数据库..."
             try {
-                val res = vpnApp.geoDatabaseManager.upgradeToFullDatabases { step ->
+                val res = vpnApp.geoDatabaseManager.upgradeToFullDatabases(runningMixedPort()) { step ->
                     _busyMessage.value = step
                 }
                 res.onSuccess { st ->

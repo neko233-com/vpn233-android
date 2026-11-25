@@ -114,6 +114,7 @@ fun RulesDialog(
     var search by remember { mutableStateOf("") }
     var editingEntry by remember { mutableStateOf<CustomRuleEntry?>(null) }
     var showCreateDialog by remember { mutableStateOf(false) }
+    var showPresetDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(tab, customRules) {
         if (tab == 1) onRefreshActiveRules()
@@ -156,6 +157,14 @@ fun RulesDialog(
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (tab == 0) {
+                            Surface(
+                                onClick = { showPresetDialog = true },
+                                shape = RoundedCornerShape(10.dp),
+                                color = p.card,
+                                border = BorderStroke(1.dp, p.border)
+                            ) {
+                                Text("模板", color = p.accentSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(10.dp, 7.dp))
+                            }
                             Surface(
                                 onClick = { showCreateDialog = true },
                                 shape = RoundedCornerShape(10.dp),
@@ -407,6 +416,47 @@ fun RulesDialog(
             onDismiss = {
                 showCreateDialog = false
                 editingEntry = null
+            }
+        )
+    }
+
+    if (showPresetDialog) {
+        val presets = listOf(
+            "OpenAI / ChatGPT 走代理" to "DOMAIN-SUFFIX,openai.com,PROXY",
+            "ChatGPT App 域名走代理" to "DOMAIN-SUFFIX,chatgpt.com,PROXY",
+            "Claude / Anthropic 走代理" to "DOMAIN-SUFFIX,anthropic.com,PROXY",
+            "Gemini / Google AI 走代理" to "DOMAIN-SUFFIX,gemini.google.com,PROXY",
+            "GitHub 走代理" to "DOMAIN-SUFFIX,github.com,PROXY",
+            "屏蔽常见广告 (GeoSite)" to "GEOSITE,category-ads-all,REJECT",
+            "国内 IP 直连 (no-resolve)" to "GEOIP,CN,DIRECT,no-resolve"
+        )
+        AlertDialog(
+            onDismissRequest = { showPresetDialog = false },
+            containerColor = p.card,
+            title = { Text("一键添加常用分流模板", color = p.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    presets.forEach { (title, line) ->
+                        Surface(
+                            onClick = {
+                                val pos = if (line.startsWith("GEOIP")) RulePosition.BEFORE_MATCH else RulePosition.PREPEND
+                                onAddRule(line, pos)
+                                showPresetDialog = false
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            color = p.cardElevated
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                                Text(title, color = p.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text(line, color = p.textSecondary, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showPresetDialog = false }) { Text("关闭", color = p.textSecondary) }
             }
         )
     }

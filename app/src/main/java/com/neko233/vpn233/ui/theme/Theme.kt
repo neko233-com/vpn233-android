@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import com.neko233.vpn233.data.AppLanguage
 import com.neko233.vpn233.data.ThemeMode
 
 data class Vpn233Palette(
@@ -60,6 +61,7 @@ val LocalVpnPalette = staticCompositionLocalOf { DarkPalette }
 @Composable
 fun Vpn233Theme(
     themeMode: ThemeMode,
+    language: AppLanguage = AppLanguage.SYSTEM,
     content: @Composable () -> Unit
 ) {
     val dark = when (themeMode) {
@@ -68,6 +70,7 @@ fun Vpn233Theme(
         ThemeMode.SYSTEM -> isSystemInDarkTheme()
     }
     val palette = if (dark) DarkPalette else LightPalette
+    val strings = stringsFor(language)
     val colorScheme = if (dark) {
         darkColorScheme(
             primary = palette.accent,
@@ -98,7 +101,10 @@ fun Vpn233Theme(
         )
     }
 
-    CompositionLocalProvider(LocalVpnPalette provides palette) {
+    CompositionLocalProvider(
+        LocalVpnPalette provides palette,
+        LocalStrings provides strings
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             content = content
