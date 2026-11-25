@@ -162,7 +162,7 @@ func goLoadConfig(profileDirC, overrideJsonC *C.char) *C.char {
 	if err != nil {
 		return C.CString(err.Error())
 	}
-	executor.ApplyConfig(cfg, true)
+	applyConfigAndCloseConnections(cfg)
 	runtime.GC()
 	return C.CString("")
 }
@@ -293,9 +293,7 @@ func goReset() {
 
 //export goSetMode
 func goSetMode(modeC *C.char) {
-	if m, ok := tunnel.ModeMapping[strings.ToLower(strings.TrimSpace(C.GoString(modeC)))]; ok {
-		tunnel.SetMode(m)
-	}
+	setModeAndCloseConnections(C.GoString(modeC))
 }
 
 //export goGetMode
@@ -425,29 +423,10 @@ func goQueryRulesJson() *C.char {
 
 //export goSelectProxy
 func goSelectProxy(groupC, proxyC *C.char) C.int {
-	groupName := C.GoString(groupC)
-	proxyName := C.GoString(proxyC)
-	p := tunnel.Proxies()[groupName]
-	if p == nil {
-		return 0
+	if selectProxyAndCloseConnections(C.GoString(groupC), C.GoString(proxyC)) {
+		return 1
 	}
-	s, ok := p.Adapter().(outboundgroup.SelectAble)
-	if !ok {
-		return 0
-	}
-	if err := s.Set(proxyName); err != nil {
-		return 0
-	}
-	statistic.DefaultManager.Range(func(c statistic.Tracker) bool {
-		for _, ch := range c.Info().Chain {
-			if ch == groupName {
-				_ = c.Close()
-				break
-			}
-		}
-		return true
-	})
-	return 1
+	return 0
 }
 
 //export goTestGroupDelay
@@ -540,10 +519,7 @@ func goCloseConnection(idC *C.char) C.int {
 
 //export goCloseAllConnections
 func goCloseAllConnections() {
-	statistic.DefaultManager.Range(func(c statistic.Tracker) bool {
-		_ = c.Close()
-		return true
-	})
+	closeAllConnectionsInternal()
 }
 
 type providerDTO struct {

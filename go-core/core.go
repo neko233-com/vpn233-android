@@ -4,17 +4,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/dlclark/regexp2"
+	"github.com/metacubex/mihomo/adapter/outboundgroup"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/config"
 	C2 "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/hub/executor"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
-	"os"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 )
 
 type OverrideOptions struct {
@@ -179,10 +183,22 @@ func resolveAndPatchConfig(profileDir string, overrideJson string) (*config.RawC
 		rawCfg.DNS.FakeIPFilter = append(rawCfg.DNS.FakeIPFilter, ov.FakeIPFilterExtra...)
 	}
 
-	if len(ov.PrependRules) > 0 {
-		rawCfg.Rule = append(append([]string{}, ov.PrependRules...), rawCfg.Rule...)
+	cleanNonBlank := func(list []string) []string {
+		out := make([]string, 0, len(list))
+		for _, item := range list {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
 	}
-	if len(ov.AppendRules) > 0 {
+
+	prependRules := cleanNonBlank(ov.PrependRules)
+	if len(prependRules) > 0 {
+		rawCfg.Rule = append(prependRules, rawCfg.Rule...)
+	}
+	appendRules := cleanNonBlank(ov.AppendRules)
+	if len(appendRules) > 0 {
 		matchIdx := -1
 		for i := len(rawCfg.Rule) - 1; i >= 0; i-- {
 			upper := strings.ToUpper(strings.TrimSpace(rawCfg.Rule[i]))
@@ -192,13 +208,13 @@ func resolveAndPatchConfig(profileDir string, overrideJson string) (*config.RawC
 			}
 		}
 		if matchIdx >= 0 {
-			updated := make([]string, 0, len(rawCfg.Rule)+len(ov.AppendRules))
+			updated := make([]string, 0, len(rawCfg.Rule)+len(appendRules))
 			updated = append(updated, rawCfg.Rule[:matchIdx]...)
-			updated = append(updated, ov.AppendRules...)
+			updated = append(updated, appendRules...)
 			updated = append(updated, rawCfg.Rule[matchIdx:]...)
 			rawCfg.Rule = updated
 		} else {
-			rawCfg.Rule = append(rawCfg.Rule, ov.AppendRules...)
+			rawCfg.Rule = append(rawCfg.Rule, appendRules...)
 		}
 	}
 
@@ -260,4 +276,53 @@ func buildRulesDTO(rules []C2.Rule) []ruleDTO {
 		})
 	}
 	return res
+}
+
+func closeAllConnectionsInternal() {
+	var trackers []statistic.Tracker
+	statistic.DefaultManager.Range(func(c statistic.Tracker) bool {
+		trackers = append(trackers, c)
+		return true
+	})
+	for _, c := range trackers {
+		_ = c.Close()
+	}
+}
+
+func applyConfigAndCloseConnections(cfg *config.Config) {
+	closeAllConnectionsInternal()
+	executor.ApplyConfig(cfg, true)
+	runtime.GC()
+}
+
+func setModeAndCloseConnections(modeStr string) {
+	if m, ok := tunnel.ModeMapping[strings.ToLower(strings.TrimSpace(modeStr))]; ok {
+		prev := tunnel.Mode()
+		tunnel.SetMode(m)
+		if prev != m {
+			closeAllConnectionsInternal()
+		}
+	}
+}
+
+func selectProxyAndCloseConnections(groupName, proxyName string) bool {
+	p := tunnel.Proxies()[groupName]
+	if p == nil {
+		return false
+	}
+	s, ok := p.Adapter().(outboundgroup.SelectAble)
+	if !ok {
+		return false
+	}
+	var prevNow string
+	if pg, okPg := p.Adapter().(outboundgroup.ProxyGroup); okPg {
+		prevNow = pg.Now()
+	}
+	if err := s.Set(proxyName); err != nil {
+		return false
+	}
+	if prevNow != proxyName {
+		closeAllConnectionsInternal()
+	}
+	return true
 }
