@@ -105,6 +105,34 @@ internal class ProfileStorageEngine(
         updatedItem
     }
 
+    fun validateGlobalMergeYaml(
+        globalMergeYaml: String,
+        overrideJsonBuilder: (String) -> String
+    ): Result<Unit> = runCatching {
+        val trimmed = globalMergeYaml.trim()
+        if (trimmed.isEmpty()) return@runCatching
+        val activeDir = getActiveProfileDir() ?: _profiles.value.firstOrNull()?.let { getProfileDir(it.id) }
+        if (activeDir != null) {
+            val err = overrideValidator(activeDir.absolutePath, overrideJsonBuilder(trimmed))
+            if (err.isNotBlank()) throw IllegalArgumentException("全局 Merge 覆写校验失败: $err")
+            return@runCatching
+        }
+        val probeDir = File(cacheDir, "probe_global_merge").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        try {
+            File(probeDir, "config.yaml").writeText(
+                "proxies:\n  - {name: Probe, type: socks5, server: 127.0.0.1, port: 1080}\nproxy-groups:\n  - {name: PROXY, type: select, proxies: [Probe, DIRECT]}\nrules:\n  - MATCH,PROXY\n",
+                Charsets.UTF_8
+            )
+            val err = overrideValidator(probeDir.absolutePath, overrideJsonBuilder(trimmed))
+            if (err.isNotBlank()) throw IllegalArgumentException("全局 Merge 覆写校验失败: $err")
+        } finally {
+            probeDir.deleteRecursively()
+        }
+    }
+
     fun reloadFromDisk() {
         synchronized(lock) {
             if (!metaFile.exists()) {
@@ -297,7 +325,12 @@ internal class ProfileStorageEngine(
         name: String,
         yamlContent: String,
         sourceType: ProfileSourceType = ProfileSourceType.LOCAL,
-        url: String = ""
+        url: String = "",
+        autoUpdateMinutes: Int = -1,
+        uploadBytes: Long = -1L,
+        downloadBytes: Long = -1L,
+        totalBytes: Long = -1L,
+        expireEpochSec: Long = -1L
     ): Result<ProfileSaveResult> = runCatching {
         val normalizedYaml = SubscriptionParser.normalizeToClashYaml(yamlContent)
         val newHash = sha256Hex(normalizedYaml)
@@ -334,8 +367,14 @@ internal class ProfileStorageEngine(
                 url = url.trim()
             )).copy(
                 name = resolvedName,
+                sourceType = if (url.isNotBlank()) ProfileSourceType.URL else (matched?.sourceType ?: sourceType),
                 url = url.trim().ifBlank { matched?.url ?: "" },
-                updatedAt = System.currentTimeMillis()
+                updatedAt = System.currentTimeMillis(),
+                autoUpdateMinutes = if (autoUpdateMinutes >= 0) autoUpdateMinutes else (matched?.autoUpdateMinutes ?: 0),
+                uploadBytes = if (uploadBytes >= 0L) uploadBytes else (matched?.uploadBytes ?: -1L),
+                downloadBytes = if (downloadBytes >= 0L) downloadBytes else (matched?.downloadBytes ?: -1L),
+                totalBytes = if (totalBytes >= 0L) totalBytes else (matched?.totalBytes ?: -1L),
+                expireEpochSec = if (expireEpochSec >= 0L) expireEpochSec else (matched?.expireEpochSec ?: -1L)
             )
             synchronized(lock) {
                 val list = _profiles.value.toMutableList()
@@ -567,6 +606,8 @@ class ProfileRepository(private val context: Context) {
     fun readMergeYaml(id: String): String = storage.readMergeYaml(id)
     fun saveMergeYaml(id: String, mergeYaml: String, overrideBuilder: (String) -> String): Result<ProfileItem> =
         storage.saveMergeYaml(id, mergeYaml, overrideBuilder)
+    fun validateGlobalMergeYaml(globalMergeYaml: String, overrideBuilder: (String) -> String): Result<Unit> =
+        storage.validateGlobalMergeYaml(globalMergeYaml, overrideBuilder)
     fun setAutoUpdateMinutes(id: String, minutes: Int) = storage.setAutoUpdateMinutes(id, minutes)
     fun setProfileUpdateOptions(
         id: String,
@@ -585,9 +626,25 @@ class ProfileRepository(private val context: Context) {
         name: String,
         yamlContent: String,
         sourceType: ProfileSourceType = ProfileSourceType.LOCAL,
-        url: String = ""
+        url: String = "",
+        autoUpdateMinutes: Int = -1,
+        uploadBytes: Long = -1L,
+        downloadBytes: Long = -1L,
+        totalBytes: Long = -1L,
+        expireEpochSec: Long = -1L
     ): Result<ProfileSaveResult> = withContext(Dispatchers.IO) {
-        storage.saveYamlContentWithResult(id, name, yamlContent, sourceType, url)
+        storage.saveYamlContentWithResult(
+            id = id,
+            name = name,
+            yamlContent = yamlContent,
+            sourceType = sourceType,
+            url = url,
+            autoUpdateMinutes = autoUpdateMinutes,
+            uploadBytes = uploadBytes,
+            downloadBytes = downloadBytes,
+            totalBytes = totalBytes,
+            expireEpochSec = expireEpochSec
+        )
     }
 
     suspend fun saveYamlContent(

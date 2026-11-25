@@ -78,7 +78,7 @@ class AgentControlProvider : ContentProvider() {
                 }
                 "list_profiles" -> handleListProfiles(app)
                 "import_url" -> handleImportUrl(app, arg.orEmpty(), extras?.getString("name").orEmpty())
-                "import_yaml" -> handleImportYaml(app, arg.orEmpty(), extras?.getString("name").orEmpty())
+                "import_yaml" -> handleImportYaml(app, arg.orEmpty(), extras)
                 "activate_profile" -> handleActivateProfile(app, arg.orEmpty(), extras?.getBoolean("force", false) ?: false)
                 "rename_profile" -> handleRenameProfile(app, arg.orEmpty(), extras?.getString("name").orEmpty())
                 "update_profile" -> handleUpdateProfile(app, arg.orEmpty())
@@ -89,6 +89,8 @@ class AgentControlProvider : ContentProvider() {
                     okBundle(JSONObject().put("id", item.id).put("name", item.name).put("yaml", app.profileRepository.readMergeYaml(item.id)))
                 }
                 "set_merge_yaml" -> handleSetMergeYaml(app, arg.orEmpty(), extras?.getString("yaml").orEmpty())
+                "get_global_merge_yaml" -> okBundle(JSONObject().put("yaml", app.settingsStore.settings.value.globalMergeYaml))
+                "set_global_merge_yaml" -> handleSetGlobalMergeYaml(app, extras?.getString("yaml") ?: arg.orEmpty())
                 "delete_profile" -> handleDeleteProfile(app, arg.orEmpty())
                 "export_backup" -> {
                     val zip = app.profileRepository.exportAllBackupZip()
@@ -158,6 +160,7 @@ class AgentControlProvider : ContentProvider() {
                     put("showTrafficInNotification", s.showTrafficInNotification)
                     put("disconnectOnNetworkChange", s.disconnectOnNetworkChange)
                     put("language", s.language.code)
+                    put("hasGlobalMerge", s.globalMergeYaml.isNotBlank())
                     put("delayTestUrl", s.delayTestUrl)
                     put("themeMode", s.themeMode.name)
                     put("accessControlMode", s.accessControlMode.name)
@@ -166,6 +169,24 @@ class AgentControlProvider : ContentProvider() {
                 "set_setting" -> handleSetSetting(app, arg.orEmpty(), extras?.getString("value").orEmpty())
                 "geo_status" -> {
                     val g = app.geoDatabaseManager.getStatus()
+                    okBundle(JSONObject().apply {
+                        put("geoIpBytes", g.geoIpBytes)
+                        put("geoSiteBytes", g.geoSiteBytes)
+                        put("asnBytes", g.asnBytes)
+                        put("isGeoIpFull", g.isGeoIpFull)
+                        put("isGeoSiteFull", g.isGeoSiteFull)
+                        put("hasAsn", g.hasAsn)
+                    })
+                }
+                "upgrade_geo" -> {
+                    val g = runBlocking(Dispatchers.IO) {
+                        app.geoDatabaseManager.upgradeToFullDatabases(runningProxyPort(app)) {}.getOrThrow()
+                    }
+                    if (Vpn233Service.status.value == VpnStatus.RUNNING) {
+                        MihomoBridge.closeAllConnections()
+                        Vpn233Service.reload(app)
+                        waitUntilSettled(timeoutMs = 3500L)
+                    }
                     okBundle(JSONObject().apply {
                         put("geoIpBytes", g.geoIpBytes)
                         put("geoSiteBytes", g.geoSiteBytes)
@@ -299,23 +320,51 @@ class AgentControlProvider : ContentProvider() {
         })
     }
 
-    private fun handleImportYaml(app: Vpn233Application, rawOrPath: String, name: String): Bundle {
-        val content = if (rawOrPath.startsWith("/") && File(rawOrPath).exists()) {
+    private fun readRawOrFile(rawOrPath: String): String =
+        if (rawOrPath.startsWith("/") && File(rawOrPath).exists()) {
             File(rawOrPath).readText(Charsets.UTF_8)
         } else {
             rawOrPath
         }
+
+    private fun handleImportYaml(app: Vpn233Application, rawOrPath: String, extras: Bundle?): Bundle {
+        val content = readRawOrFile(rawOrPath)
+        val metaRaw = extras?.getString("meta").orEmpty().let(::readRawOrFile).trim()
+        val metaObj = if (metaRaw.startsWith("{")) runCatching { JSONObject(metaRaw) }.getOrNull() else null
+        val name = metaObj?.optString("name").orEmpty().ifBlank { extras?.getString("name").orEmpty() }
+        val url = metaObj?.optString("url").orEmpty().ifBlank { extras?.getString("url").orEmpty() }
+        val autoMins = metaObj?.optInt("autoUpdateMinutes", -1) ?: (extras?.getInt("autoUpdateMinutes", -1) ?: -1)
+        val upBytes = metaObj?.optLong("uploadBytes", -1L) ?: -1L
+        val dnBytes = metaObj?.optLong("downloadBytes", -1L) ?: -1L
+        val totBytes = metaObj?.optLong("totalBytes", -1L) ?: -1L
+        val expSec = metaObj?.optLong("expireEpochSec", -1L) ?: -1L
         val prevActive = app.profileRepository.activeProfileId.value
         val res = runBlocking(Dispatchers.IO) {
             app.profileRepository.saveYamlContentWithResult(
                 id = null,
                 name = name.ifBlank { "ADB导入配置" },
                 yamlContent = content,
-                sourceType = ProfileSourceType.LOCAL
+                sourceType = if (url.isNotBlank()) ProfileSourceType.URL else ProfileSourceType.LOCAL,
+                url = url,
+                autoUpdateMinutes = autoMins,
+                uploadBytes = upBytes,
+                downloadBytes = dnBytes,
+                totalBytes = totBytes,
+                expireEpochSec = expSec
             )
         }
         val saveRes = res.getOrThrow()
         val item = saveRes.item
+        metaObj?.optJSONObject("selected")?.let { selObj ->
+            val keys = selObj.keys()
+            while (keys.hasNext()) {
+                val grp = keys.next()
+                val node = selObj.optString(grp)
+                if (grp.isNotBlank() && node.isNotBlank()) {
+                    app.settingsStore.setSelectedNode(item.id, grp, node)
+                }
+            }
+        }
         app.profileRepository.setActiveProfile(item.id)
         val needReload = prevActive != item.id || saveRes.contentChanged
         if (Vpn233Service.status.value == VpnStatus.RUNNING && needReload) {
@@ -411,11 +460,7 @@ class AgentControlProvider : ContentProvider() {
     private fun handleSetMergeYaml(app: Vpn233Application, idOrName: String, rawOrPath: String): Bundle {
         val item = app.profileRepository.findByIdOrName(idOrName)
             ?: return errBundle("Profile not found: $idOrName")
-        val content = if (rawOrPath.startsWith("/") && File(rawOrPath).exists()) {
-            File(rawOrPath).readText(Charsets.UTF_8)
-        } else {
-            rawOrPath
-        }
+        val content = readRawOrFile(rawOrPath)
         val saved = app.profileRepository.saveMergeYaml(item.id, content) { m ->
             app.settingsStore.toOverrideJson(app.settingsStore.settings.value, m)
         }.getOrThrow()
@@ -425,6 +470,22 @@ class AgentControlProvider : ContentProvider() {
             waitUntilSettled(timeoutMs = 3500L)
         }
         return okBundle(JSONObject().put("id", saved.id).put("name", saved.name).put("hasMergeYaml", saved.hasMergeYaml))
+    }
+
+    private fun handleSetGlobalMergeYaml(app: Vpn233Application, rawOrPath: String): Bundle {
+        val trimmed = readRawOrFile(rawOrPath).trim()
+        app.profileRepository.validateGlobalMergeYaml(trimmed) { gm ->
+            val s = app.settingsStore.settings.value.copy(globalMergeYaml = gm)
+            val activeMerge = app.profileRepository.getActiveProfile()?.let { app.profileRepository.readMergeYaml(it.id) }.orEmpty()
+            app.settingsStore.toOverrideJson(s, activeMerge)
+        }.getOrThrow()
+        app.settingsStore.update { it.copy(globalMergeYaml = trimmed) }
+        if (Vpn233Service.status.value == VpnStatus.RUNNING) {
+            MihomoBridge.closeAllConnections()
+            Vpn233Service.reload(app)
+            waitUntilSettled(timeoutMs = 3500L)
+        }
+        return okBundle(JSONObject().put("hasGlobalMerge", trimmed.isNotEmpty()).put("length", trimmed.length))
     }
 
     private fun handleTestMatch(host: String, extras: Bundle?): Bundle {

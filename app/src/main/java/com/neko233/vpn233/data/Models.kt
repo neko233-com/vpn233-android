@@ -140,7 +140,8 @@ data class AppSettings(
     val showTrafficInNotification: Boolean = true,
     val disconnectOnNetworkChange: Boolean = true,
     val language: AppLanguage = AppLanguage.SYSTEM,
-    val pinnedNodes: Set<String> = emptySet()
+    val pinnedNodes: Set<String> = emptySet(),
+    val globalMergeYaml: String = ""
 )
 
 data class ProxyNodeUi(

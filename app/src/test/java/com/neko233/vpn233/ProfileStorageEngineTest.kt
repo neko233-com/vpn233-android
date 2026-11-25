@@ -163,6 +163,22 @@ class ProfileStorageEngineTest {
         // Per-profile Merge YAML + update options persistence
         reloaded.setProfileUpdateOptions(clip1.item.id, 720, ProfileUpdateMode.PROXY, "clash-verge/v2.2.3")
         reloaded.saveMergeYaml(clip1.item.id, "prepend-rules:\n  - DOMAIN-SUFFIX,openai.com,PROXY\n").getOrThrow()
+        reloaded.validateGlobalMergeYaml("prepend-rules:\n  - DOMAIN-SUFFIX,poko.top,DIRECT\n") { "{}" }.getOrThrow()
+        val withUrlQuota = reloaded.saveYamlContentWithResult(
+            id = null,
+            name = "MigratedSub",
+            yamlContent = sampleYaml("4.4.4.4", "SG-01"),
+            sourceType = ProfileSourceType.URL,
+            url = "https://sub.example.com/migrated",
+            autoUpdateMinutes = 1440,
+            uploadBytes = 1024L,
+            downloadBytes = 2048L,
+            totalBytes = 102400L,
+            expireEpochSec = 1900000000L
+        ).getOrThrow()
+        assertEquals(ProfileSourceType.URL, withUrlQuota.item.sourceType)
+        assertEquals(3072L, withUrlQuota.item.usedBytes)
+        assertEquals(1440, withUrlQuota.item.autoUpdateMinutes)
         val reloadedAgain = ProfileStorageEngine(filesDir, cacheDir, configValidator = { "" })
         val p = reloadedAgain.findByIdOrName(clip1.item.id)!!
         assertEquals(720, p.autoUpdateMinutes)

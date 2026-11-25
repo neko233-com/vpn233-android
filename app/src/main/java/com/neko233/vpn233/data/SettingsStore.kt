@@ -111,7 +111,8 @@ class SettingsStore(context: Context) {
                 showTrafficInNotification = obj.optBoolean("showTrafficInNotification", true),
                 disconnectOnNetworkChange = obj.optBoolean("disconnectOnNetworkChange", true),
                 language = AppLanguage.fromCode(obj.optString("language", "system")),
-                pinnedNodes = pinned
+                pinnedNodes = pinned,
+                globalMergeYaml = obj.optString("globalMergeYaml", "")
             )
         }.getOrDefault(AppSettings())
     }
@@ -173,6 +174,7 @@ class SettingsStore(context: Context) {
             put("disconnectOnNetworkChange", s.disconnectOnNetworkChange)
             put("language", s.language.code)
             put("pinnedNodes", JSONArray(s.pinnedNodes.toList()))
+            put("globalMergeYaml", s.globalMergeYaml)
         }
         val tmp = File(baseDir, "settings.json.tmp")
         tmp.writeText(obj.toString(2), Charsets.UTF_8)
@@ -216,6 +218,9 @@ class SettingsStore(context: Context) {
             }
             if (s.fakeIpFilterExtra.isNotEmpty()) {
                 put("fakeIpFilterExtra", JSONArray(s.fakeIpFilterExtra))
+            }
+            if (s.globalMergeYaml.isNotBlank()) {
+                put("globalMergeYaml", s.globalMergeYaml)
             }
             if (mergeYaml.isNotBlank()) {
                 put("mergeYaml", mergeYaml)

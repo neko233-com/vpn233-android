@@ -22,8 +22,8 @@ android {
         applicationId = "com.neko233.vpn233"
         minSdk = 26
         targetSdk = 36
-        versionCode = 120
-        versionName = "1.2.0"
+        versionCode = 121
+        versionName = "1.2.1"
 
         ndk {
             abiFilters += "arm64-v8a"

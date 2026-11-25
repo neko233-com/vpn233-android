@@ -29,8 +29,28 @@ data class UiStrings(
     val qaProfiles: String = if (isEn) "Subscriptions" else "订阅配置",
     val proxiesTitle: String = if (isEn) "Proxy Nodes" else "节点代理",
     val profilesTitle: String = if (isEn) "Profiles & Subs" else "订阅与配置",
-    val settingsTitle: String = if (isEn) "Settings & Engine" else "设置与增强"
-)
+    val settingsTitle: String = if (isEn) "Settings & Engine" else "设置与增强",
+    val noProfileTitle: String = if (isEn) "No Profile Selected" else "未配置节点文件",
+    val noProfileSub: String = if (isEn) "Tap right button or Profiles to import" else "点击右侧或「配置」导入订阅",
+    val outboundPrefix: String = if (isEn) "Outbound" else "当前出站",
+    val modePrefix: String = if (isEn) "Mode" else "运行模式",
+    val tapConnectHint: String = if (isEn) "Tap power button to connect" else "点击右侧按钮一键连接",
+    val totalDownPrefix: String = if (isEn) "Total Down" else "总下载",
+    val totalUpPrefix: String = if (isEn) "Total Up" else "总上传",
+    val standbyText: String = if (isEn) "Idle" else "待机",
+    val subQuotaTitle: String = if (isEn) "Subscription Quota" else "订阅流量配额",
+    val expirePrefix: String = if (isEn) "Expires" else "到期时间",
+    val browseNodes: String = if (isEn) "Browse nodes" else "浏览节点",
+    val activeGroupLabel: String = if (isEn) "Active group" else "当前主分组",
+    val availAfterStart: String = if (isEn) "Connect first" else "启动后可用",
+    val importSubHint: String = if (isEn) "Import subscription" else "导入订阅",
+    val globalMergeBtn: String = if (isEn) "Global Merge" else "全局覆写",
+    val updateAllBtn: String = if (isEn) "Update All" else "全部更新",
+    val importSubBtn: String = if (isEn) "Import" else "导入订阅"
+) {
+    fun groupsCountText(n: Int): String = if (isEn) "$n proxy groups" else "$n 个策略组"
+    fun customRulesCountText(n: Int): String = if (isEn) "$n custom rules" else "自定义 $n 条"
+}
 
 fun stringsFor(language: AppLanguage): UiStrings {
     val isEn = when (language) {
