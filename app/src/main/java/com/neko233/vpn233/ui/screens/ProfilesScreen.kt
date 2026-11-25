@@ -115,55 +115,85 @@ fun ProfilesScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(str.profilesTitle, color = p.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Surface(
-                    onClick = {
-                        mergeText = globalMergeYaml
-                        editingGlobalMerge = true
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (globalMergeYaml.isNotBlank()) p.accent.copy(alpha = 0.14f) else p.card,
-                    border = BorderStroke(1.dp, if (globalMergeYaml.isNotBlank()) p.accent.copy(alpha = 0.45f) else p.border)
+            Text(
+                str.profilesTitle,
+                color = p.textPrimary,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            Surface(
+                onClick = {
+                    importTab = 0
+                    showImportDialog = true
+                },
+                shape = RoundedCornerShape(12.dp),
+                color = p.accent
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Icon(AppIcons.Plus, null, tint = Color(0xFF042117), modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
                     Text(
-                        str.globalMergeBtn,
-                        color = if (globalMergeYaml.isNotBlank()) p.accent else p.textSecondary,
+                        str.importSubBtn,
+                        color = Color(0xFF042117),
                         fontSize = 12.sp,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
-                if (profiles.any { it.url.isNotBlank() }) {
-                    Surface(
-                        onClick = onUpdateAll,
-                        shape = RoundedCornerShape(12.dp),
-                        color = p.card,
-                        border = BorderStroke(1.dp, p.border)
-                    ) {
-                        Text(
-                            str.updateAllBtn,
-                            color = p.accentSecondary,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp)
-                        )
-                    }
-                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                onClick = {
+                    mergeText = globalMergeYaml
+                    editingGlobalMerge = true
+                },
+                shape = RoundedCornerShape(11.dp),
+                color = if (globalMergeYaml.isNotBlank()) p.accent.copy(alpha = 0.14f) else p.card,
+                border = BorderStroke(1.dp, if (globalMergeYaml.isNotBlank()) p.accent.copy(alpha = 0.45f) else p.border)
+            ) {
+                Text(
+                    if (globalMergeYaml.isNotBlank()) "${str.globalMergeBtn} · ON" else str.globalMergeBtn,
+                    color = if (globalMergeYaml.isNotBlank()) p.accent else p.textSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
+                )
+            }
+            if (profiles.any { it.url.isNotBlank() }) {
                 Surface(
-                    onClick = {
-                        importTab = 0
-                        showImportDialog = true
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    color = p.accent
+                    onClick = onUpdateAll,
+                    shape = RoundedCornerShape(11.dp),
+                    color = p.card,
+                    border = BorderStroke(1.dp, p.border)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(AppIcons.Plus, null, tint = Color(0xFF042117), modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(str.importSubBtn, color = Color(0xFF042117), fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
+                    Text(
+                        str.updateAllBtn,
+                        color = p.accentSecondary,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
+                    )
                 }
             }
         }
