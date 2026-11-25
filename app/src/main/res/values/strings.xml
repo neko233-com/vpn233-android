@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">vpn233</string>
+    <string name="notification_channel_name">vpn233 Status</string>
+</resources>
