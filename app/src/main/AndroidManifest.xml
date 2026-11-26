@@ -60,6 +60,11 @@
         </service>
 
         <service
+            android:name=".service.SubscriptionUpdateJob"
+            android:exported="true"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <service
             android:name=".service.Vpn233TileService"
             android:exported="true"
             android:icon="@drawable/ic_qs_tile"

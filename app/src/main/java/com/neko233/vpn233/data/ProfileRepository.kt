@@ -5,10 +5,13 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import com.neko233.vpn233.BuildConfig
 import com.neko233.vpn233.core.MihomoBridge
+import com.neko233.vpn233.service.SubscriptionUpdateScheduler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,7 +27,6 @@ import java.net.URLDecoder
 import java.security.MessageDigest
 import java.nio.file.Files
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -428,6 +430,9 @@ internal class ProfileStorageEngine(
             _profiles.value.firstOrNull { it.id == existing.id }
                 ?: throw IllegalStateException("订阅已被删除")
         } else findByUrl(trimmedUrl)
+        if (existing != null && currentExisting?.url?.trim() != trimmedUrl) {
+            throw IllegalStateException("订阅地址已变更")
+        }
         val targetId = currentExisting?.id ?: UUID.randomUUID().toString()
         val normalizedYaml = SubscriptionParser.normalizeToClashYaml(body)
         val newHash = sha256Hex(normalizedYaml)
@@ -684,7 +689,8 @@ class ProfileRepository(private val context: Context) {
         configValidator = { dir -> MihomoBridge.validateConfig(dir) },
         overrideValidator = { dir, ov -> MihomoBridge.validateConfigWithOverride(dir, ov) }
     )
-    private val autoUpdateLastAttemptMs = ConcurrentHashMap<String, Long>()
+    private val autoUpdateMutex = Mutex()
+    private val retryStore = SubscriptionRetryStore(context)
 
     val profiles: StateFlow<List<ProfileItem>> = storage.profiles
     val activeProfileId: StateFlow<String?> = storage.activeProfileId
@@ -756,8 +762,15 @@ class ProfileRepository(private val context: Context) {
             require(trimmedUrl.startsWith("http://", true) || trimmedUrl.startsWith("https://", true)) {
                 "仅支持 http:// 或 https:// 订阅链接"
             }
-            val existing = existingId?.let { eid -> profiles.value.firstOrNull { it.id == eid } }
-                ?: storage.findByUrl(trimmedUrl)
+            val existing = if (existingId != null) {
+                profiles.value.firstOrNull { it.id == existingId }
+                    ?: throw IllegalStateException("订阅已被删除")
+            } else {
+                storage.findByUrl(trimmedUrl)
+            }
+            if (existingId != null && existing?.url?.trim() != trimmedUrl) {
+                throw IllegalStateException("订阅地址已变更")
+            }
             val updateMode = existing?.updateMode ?: ProfileUpdateMode.AUTO
             val ua = SubscriptionUserAgent.select(existing?.customUserAgent, BuildConfig.MIHOMO_VERSION, BuildConfig.VERSION_NAME)
 
@@ -833,26 +846,29 @@ class ProfileRepository(private val context: Context) {
     }
 
     suspend fun checkDueAutoUpdates(runningProxyPort: Int): Pair<Int, Boolean> = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        val dueProfiles = profiles.value.filter { p ->
-            if (p.url.isBlank() || p.autoUpdateMinutes <= 0) return@filter false
-            val intervalMs = p.autoUpdateMinutes * 60_000L
-            val lastTry = autoUpdateLastAttemptMs[p.id] ?: 0L
-            (now - p.updatedAt) >= intervalMs && (now - lastTry) >= 300_000L
-        }
-        if (dueProfiles.isEmpty()) return@withContext (0 to false)
-        var updatedCount = 0
-        var activeChanged = false
-        val activeId = activeProfileId.value
-        for (p in dueProfiles) {
-            autoUpdateLastAttemptMs[p.id] = now
-            val res = importFromUrlWithResult(p.url, p.name, p.id, runningProxyPort)
-            res.onSuccess { saveRes ->
-                updatedCount++
-                if (p.id == activeId && saveRes.contentChanged) activeChanged = true
+        try {
+            autoUpdateMutex.withLock {
+                val now = System.currentTimeMillis()
+                val dueProfiles = profiles.value.filter { p ->
+                    SubscriptionUpdatePolicy.dueAt(p, retryStore.retryAfter(p.id))?.let { it <= now } == true
+                }
+                var updatedCount = 0
+                val changedIds = mutableSetOf<String>()
+                for (p in dueProfiles) {
+                    val res = importFromUrlWithResult(p.url, p.name, p.id, runningProxyPort)
+                    res.onSuccess { saveRes ->
+                        retryStore.succeeded(p.id)
+                        updatedCount++
+                        if (saveRes.contentChanged) changedIds.add(p.id)
+                    }.onFailure {
+                        retryStore.failed(p.id, System.currentTimeMillis())
+                    }
+                }
+                updatedCount to (activeProfileId.value?.let(changedIds::contains) == true)
             }
+        } finally {
+            SubscriptionUpdateScheduler.reconcile(context, profiles.value)
         }
-        updatedCount to activeChanged
     }
 
     suspend fun importFromUrl(

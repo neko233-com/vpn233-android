@@ -5,6 +5,12 @@ import com.neko233.vpn233.core.MihomoBridge
 import com.neko233.vpn233.data.GeoDatabaseManager
 import com.neko233.vpn233.data.ProfileRepository
 import com.neko233.vpn233.data.SettingsStore
+import com.neko233.vpn233.service.SubscriptionUpdateScheduler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 class Vpn233Application : Application() {
     lateinit var settingsStore: SettingsStore
@@ -17,6 +23,7 @@ class Vpn233Application : Application() {
     @Volatile
     private var initialized = false
     private val initLock = Any()
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
         super.onCreate()
@@ -39,6 +46,9 @@ class Vpn233Application : Application() {
             )
             profileRepository = ProfileRepository(this)
             initialized = true
+            appScope.launch {
+                profileRepository.profiles.collect { SubscriptionUpdateScheduler.reconcile(this@Vpn233Application, it) }
+            }
         }
     }
 

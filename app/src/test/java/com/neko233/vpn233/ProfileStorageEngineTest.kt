@@ -6,6 +6,7 @@ import com.neko233.vpn233.data.ProfileUpdateMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -35,6 +36,24 @@ class ProfileStorageEngineTest {
     """.trimIndent()
 
     @Test
+    fun staleBackgroundUpdateCannotRestoreDeletedOrReplacedSubscription() {
+        val engine = ProfileStorageEngine(tempFolder.newFolder("stale-files"), tempFolder.newFolder("stale-cache"), configValidator = { "" })
+        val oldUrl = "https://old.example.invalid/sub"
+        val newUrl = "https://new.example.invalid/sub"
+        val yaml = sampleYaml("203.0.113.1")
+        val original = engine.saveYamlContentWithResult(null, "Subscription", yaml, ProfileSourceType.URL, oldUrl).getOrThrow().item
+        engine.saveYamlContentWithResult(original.id, original.name, yaml, ProfileSourceType.URL, newUrl).getOrThrow()
+
+        fun staleSave() = engine.upsertUrlPayload(oldUrl, original.name, yaml, original, 0, -1, -1, -1, -1)
+        assertThrows(IllegalStateException::class.java) { staleSave() }
+        assertEquals(newUrl, engine.profiles.value.single().url)
+
+        engine.deleteProfile(original.id)
+        assertThrows(IllegalStateException::class.java) { staleSave() }
+        assertTrue(engine.profiles.value.isEmpty())
+    }
+
+    @Test
     fun idempotentNamedYamlAndUrlUpsertsDoNotDuplicate() {
         val filesDir = tempFolder.newFolder("files")
         val cacheDir = tempFolder.newFolder("cache")
@@ -44,7 +63,7 @@ class ProfileStorageEngineTest {
         val first = engine.saveYamlContentWithResult(
             id = null,
             name = "WorkProfile",
-            yamlContent = sampleYaml("1.1.1.1", "KR-01"),
+            yamlContent = sampleYaml("203.0.113.1", "KR-01"),
             sourceType = ProfileSourceType.LOCAL
         ).getOrThrow()
         assertTrue(first.created)
@@ -53,7 +72,7 @@ class ProfileStorageEngineTest {
         val secondSame = engine.saveYamlContentWithResult(
             id = null,
             name = "WorkProfile",
-            yamlContent = sampleYaml("1.1.1.1", "KR-01"),
+            yamlContent = sampleYaml("203.0.113.1", "KR-01"),
             sourceType = ProfileSourceType.LOCAL
         ).getOrThrow()
         assertFalse(secondSame.created)
@@ -65,7 +84,7 @@ class ProfileStorageEngineTest {
         val thirdUpdated = engine.saveYamlContentWithResult(
             id = null,
             name = "WorkProfile",
-            yamlContent = sampleYaml("2.2.2.2", "US-01"),
+            yamlContent = sampleYaml("203.0.113.2", "US-01"),
             sourceType = ProfileSourceType.LOCAL
         ).getOrThrow()
         assertFalse(thirdUpdated.created)
@@ -75,11 +94,11 @@ class ProfileStorageEngineTest {
         assertTrue(engine.readProfileYaml(first.item.id).contains("US-01"))
 
         // 3. URL import idempotency (by normalized URL)
-        val url = "https://sub.example.com/clash.yaml"
+        val url = "https://sub.example.invalid/clash.yaml"
         val urlFirst = engine.upsertUrlPayload(
             trimmedUrl = url,
             resolvedName = "MySub",
-            body = sampleYaml("3.3.3.3", "JP-01"),
+            body = sampleYaml("203.0.113.3", "JP-01"),
             existing = engine.findByUrl(url),
             updateHours = 12,
             uploadBytes = 100L,
@@ -91,7 +110,7 @@ class ProfileStorageEngineTest {
         val urlSecondSame = engine.upsertUrlPayload(
             trimmedUrl = url,
             resolvedName = "MySub",
-            body = sampleYaml("3.3.3.3", "JP-01"),
+            body = sampleYaml("203.0.113.3", "JP-01"),
             existing = engine.findByUrl(url),
             updateHours = 12,
             uploadBytes = 100L,
@@ -114,7 +133,7 @@ class ProfileStorageEngineTest {
         val clip1 = engine.saveYamlContentWithResult(
             id = null,
             name = "剪贴板配置",
-            yamlContent = sampleYaml("10.0.0.1", "Clip-A"),
+            yamlContent = sampleYaml("192.0.2.1", "Clip-A"),
             sourceType = ProfileSourceType.CLIPBOARD
         ).getOrThrow()
         assertEquals("剪贴板配置", clip1.item.name)
@@ -123,7 +142,7 @@ class ProfileStorageEngineTest {
         val clip1Repeat = engine.saveYamlContentWithResult(
             id = null,
             name = "剪贴板配置",
-            yamlContent = sampleYaml("10.0.0.1", "Clip-A"),
+            yamlContent = sampleYaml("192.0.2.1", "Clip-A"),
             sourceType = ProfileSourceType.CLIPBOARD
         ).getOrThrow()
         assertFalse(clip1Repeat.created)
@@ -134,7 +153,7 @@ class ProfileStorageEngineTest {
         val clip2 = engine.saveYamlContentWithResult(
             id = null,
             name = "剪贴板配置",
-            yamlContent = sampleYaml("10.0.0.2", "Clip-B"),
+            yamlContent = sampleYaml("192.0.2.2", "Clip-B"),
             sourceType = ProfileSourceType.CLIPBOARD
         ).getOrThrow()
         assertTrue(clip2.created)
@@ -145,7 +164,7 @@ class ProfileStorageEngineTest {
         val zipBytes = ByteArrayOutputStream().use { bos ->
             ZipOutputStream(bos).use { zos ->
                 zos.putNextEntry(ZipEntry("alpha.yaml"))
-                zos.write(sampleYaml("8.8.8.8", "Alpha").toByteArray(Charsets.UTF_8))
+                zos.write(sampleYaml("192.0.2.8", "Alpha").toByteArray(Charsets.UTF_8))
                 zos.closeEntry()
             }
             bos.toByteArray()
@@ -162,14 +181,14 @@ class ProfileStorageEngineTest {
 
         // Per-profile Merge YAML + update options persistence
         reloaded.setProfileUpdateOptions(clip1.item.id, 720, ProfileUpdateMode.PROXY, "clash-verge/v2.2.3")
-        reloaded.saveMergeYaml(clip1.item.id, "prepend-rules:\n  - DOMAIN-SUFFIX,openai.com,PROXY\n").getOrThrow()
-        reloaded.validateGlobalMergeYaml("prepend-rules:\n  - DOMAIN-SUFFIX,poko.top,DIRECT\n") { "{}" }.getOrThrow()
+        reloaded.saveMergeYaml(clip1.item.id, "prepend-rules:\n  - DOMAIN-SUFFIX,example.invalid,PROXY\n").getOrThrow()
+        reloaded.validateGlobalMergeYaml("prepend-rules:\n  - DOMAIN-SUFFIX,internal.example.invalid,DIRECT\n") { "{}" }.getOrThrow()
         val withUrlQuota = reloaded.saveYamlContentWithResult(
             id = null,
             name = "MigratedSub",
-            yamlContent = sampleYaml("4.4.4.4", "SG-01"),
+            yamlContent = sampleYaml("203.0.113.4", "SG-01"),
             sourceType = ProfileSourceType.URL,
-            url = "https://sub.example.com/migrated",
+            url = "https://sub.example.invalid/migrated",
             autoUpdateMinutes = 1440,
             uploadBytes = 1024L,
             downloadBytes = 2048L,
@@ -185,6 +204,6 @@ class ProfileStorageEngineTest {
         assertEquals(ProfileUpdateMode.PROXY, p.updateMode)
         assertEquals("clash-verge/v2.2.3", p.customUserAgent)
         assertTrue(p.hasMergeYaml)
-        assertTrue(reloadedAgain.readMergeYaml(clip1.item.id).contains("openai.com"))
+        assertTrue(reloadedAgain.readMergeYaml(clip1.item.id).contains("example.invalid"))
     }
 }

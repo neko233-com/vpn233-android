@@ -36,6 +36,9 @@ object MihomoBridge {
     private var appContext: Context? = null
 
     @Volatile
+    private var logStreamingEnabled = false
+
+    @Volatile
     var socketProtector: ((Int) -> Boolean)? = null
 
     private val uidPackageCache = ConcurrentHashMap<Int, String>()
@@ -292,6 +295,16 @@ object MihomoBridge {
         }.getOrDefault(TrafficStats())
     }
 
+    /** Lightweight rate sample for the background notification, without a heap scan. */
+    fun queryRates(): TrafficStats {
+        val raw = nativeQueryRatesJson().str()
+        if (raw.isBlank()) return TrafficStats()
+        return runCatching {
+            val obj = JSONObject(raw)
+            TrafficStats(upNow = obj.optLong("upNow", 0L), downNow = obj.optLong("downNow", 0L))
+        }.getOrDefault(TrafficStats())
+    }
+
     fun queryConnections(): List<ConnectionItem> {
         val raw = nativeQueryConnectionsJson().str()
         if (raw.isBlank()) return emptyList()
@@ -367,7 +380,14 @@ object MihomoBridge {
 
     fun setLogLevel(level: String) = nativeSetLogLevel(level.utf8())
 
-    fun setLogStreaming(enabled: Boolean) = nativeSetLogStreaming(enabled)
+    fun setLogStreaming(enabled: Boolean) {
+        logStreamingEnabled = enabled
+        nativeSetLogStreaming(enabled)
+    }
+
+    fun restoreConfiguredLogLevel(level: String) {
+        if (!logStreamingEnabled) setLogLevel(level)
+    }
 
     fun forceGc() = nativeForceGc()
 
@@ -394,6 +414,7 @@ object MihomoBridge {
     @JvmStatic private external fun nativeTestGroupDelay(group: ByteArray, testUrl: ByteArray, timeoutMs: Int): ByteArray
     @JvmStatic private external fun nativeTestProxyDelay(proxy: ByteArray, testUrl: ByteArray, timeoutMs: Int): Int
     @JvmStatic private external fun nativeQueryTrafficJson(): ByteArray
+    @JvmStatic private external fun nativeQueryRatesJson(): ByteArray
     @JvmStatic private external fun nativeQueryConnectionsJson(): ByteArray
     @JvmStatic private external fun nativeCloseConnection(uuid: ByteArray): Boolean
     @JvmStatic private external fun nativeCloseAllConnections()

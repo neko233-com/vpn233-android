@@ -321,6 +321,12 @@ Java_com_neko233_vpn233_core_MihomoBridge_nativeQueryTrafficJson(JNIEnv *env, jc
 }
 
 JNIEXPORT jbyteArray JNICALL
+Java_com_neko233_vpn233_core_MihomoBridge_nativeQueryRatesJson(JNIEnv *env, jclass clazz) {
+    (void)clazz;
+    return cstr_to_jbytes_and_free(env, goQueryRatesJson());
+}
+
+JNIEXPORT jbyteArray JNICALL
 Java_com_neko233_vpn233_core_MihomoBridge_nativeQueryConnectionsJson(JNIEnv *env, jclass clazz) {
     (void)clazz;
     return cstr_to_jbytes_and_free(env, goQueryConnectionsJson());

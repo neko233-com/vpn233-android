@@ -407,7 +407,11 @@ fun ProfilesScreen(
                                 }
                                 ActionPill(
                                     icon = AppIcons.SettingsGear,
-                                    label = if (item.autoUpdateMinutes > 0) "策略(${item.autoUpdateMinutes / 60}h)" else "策略",
+                                    label = when {
+                                        item.autoUpdateMinutes <= 0 -> "策略"
+                                        item.autoUpdateMinutes % 60 == 0 -> "策略(${item.autoUpdateMinutes / 60}h)"
+                                        else -> "策略(${item.autoUpdateMinutes}m)"
+                                    },
                                     tint = p.accentSecondary
                                 ) {
                                     optionsEditingItem = item
@@ -711,7 +715,7 @@ fun ProfilesScreen(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text("自动更新周期（亮屏/回到前台检测，零后台耗电）", color = p.textSecondary, fontSize = 11.sp)
+                    Text("自动更新周期（系统后台调度，省电模式可能延后）", color = p.textSecondary, fontSize = 11.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                         listOf(0 to "关闭", 360 to "6h", 720 to "12h", 1440 to "24h").forEach { (mins, lbl) ->
                             val sel = optIntervalMin == mins.toString()

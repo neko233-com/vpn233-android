@@ -354,13 +354,13 @@ fun SettingsScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            if (ignoringBattery) "已关闭电池优化 · 后台常驻稳定" else "建议关闭电池优化 (后台防杀)",
+                            if (ignoringBattery) "已关闭系统电池优化" else "建议允许忽略系统电池优化",
                             color = if (ignoringBattery) p.accent else p.warning,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            "息屏自动休眠轮询，零 WakeLock 唤醒，仅在数据包到达时响应",
+                            "息屏暂停应用的网速轮询；系统和网络仍可能产生后台活动",
                             color = p.textSecondary,
                             fontSize = 10.sp
                         )
@@ -417,11 +417,15 @@ fun SettingsScreen(
                 }
             }
             Spacer(Modifier.height(8.dp))
-            ToggleRow("通知栏显示实时网速", "每秒刷新上传/下载速率", settings.showTrafficInNotification) { v ->
+            ToggleRow("通知栏显示网速", "应用打开时每秒刷新，后台约 15 秒，息屏暂停", settings.showTrafficInNotification) { v ->
                 onUpdateSettings(false) { it.copy(showTrafficInNotification = v) }
             }
             ToggleRow("开机自动连接", "设备重启后自动恢复上次配置", settings.autoStartOnBoot) { v ->
                 onUpdateSettings(false) { it.copy(autoStartOnBoot = v) }
+            }
+            ClickRow("系统始终开启 VPN", "在系统 VPN 设置中选择 vpn233；系统和网络状态可能影响恢复") {
+                runCatching { ctx.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) }
+                    .onFailure { onToast("无法打开系统 VPN 设置") }
             }
             ClickRow("导出全部配置备份 (.zip)", "打包当前全部配置文件与元数据") { onExportAllBackup() }
             ClickRow("释放核心内存 (GC)", "触发 Go 核心垃圾回收并归还空闲内存") {

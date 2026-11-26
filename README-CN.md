@@ -9,10 +9,11 @@
 ## 核心特性
 
 - **超低功耗与后台稳定运行**：
-  - **零 WakeLock 设计**：绝不持有唤醒锁，数据包转发完全由 Go / Linux 内核 `epoll` 事件驱动唤醒。
-  - **息屏感知休眠**：监听系统亮灭屏（`ACTION_SCREEN_OFF` / `ACTION_SCREEN_ON`），息屏或划掉后台卡片（`onTaskRemoved`）后自动停止 JNI 速率轮询与通知栏高频 Binder 刷新，并将核心日志自动降级为 `WARNING`、释放空闲堆内存。
+  - **减少后台唤醒**：应用不主动持有常驻 WakeLock；息屏时暂停应用侧网速轮询，后台通知降为约 15 秒刷新，并避免仅为通知读取堆和遍历连接。内核与系统仍可能执行网络和计时任务。
+  - **减少息屏开销**：息屏或划掉后台卡片时降低非必要日志，不再每次息屏强制执行垃圾回收；系统真正发出内存压力通知时仍可回收。
   - **极致低开销默认策略**：TUN 默认 `MTU 9000`、`UDPTimeout 60s`、`Mixed` 栈（TCP 走内核 System 栈、UDP 走 gVisor），且默认关闭每连接进程 UID 查询（`find-process-mode: off`），大幅减少 Binder IPC 损耗。
-  - **完善保活能力**：支持首页/设置页一键申请忽略电池优化（`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`）、系统下拉快捷开关瓷贴（`Vpn233TileService`）与开机自动连接（`Vpn233BootReceiver`）。
+  - **后台运行**：支持申请忽略电池优化、进入系统始终开启 VPN 设置、快捷开关与开机自动连接。持续运行仍受 Android、厂商系统和网络条件影响。
+  - **后台订阅更新**：按启用的订阅更新时间通过 Android JobScheduler 合并调度，网络不可用或更新失败时退避重试；Doze 和厂商省电策略可能推迟执行。
   - 覆盖更新时尝试恢复更新前正在运行的 VPN；手动断开的 VPN 保持断开。实际恢复受系统后台启动限制与 VPN 授权影响。
 - **完整功能 `arm64-v8a` 内核与 Geo 数据**：
   - `libmihomo.so` 使用 `cmfa,with_gvisor,with_low_memory` 构建，不关闭 EasyTier、Tailscale、ZeroTier 或 FakeTCP；具体协议仍依赖 Android 权限、系统能力和服务端支持。

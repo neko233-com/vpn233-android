@@ -20,6 +20,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
+import android.os.SystemClock
 import android.service.quicksettings.TileService
 import com.neko233.vpn233.MainActivity
 import com.neko233.vpn233.R
@@ -43,6 +44,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicLong
 
 class Vpn233Service : VpnService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -56,7 +58,9 @@ class Vpn233Service : VpnService() {
     private var screenInteractive = true
     @Volatile
     private var lastPhysicalNetHandle: Long? = null
+    private val dnsUpdateGate = DnsUpdateGate()
     private var lastNotifiedText = ""
+    private val lastTrimGcMs = AtomicLong(-1L)
 
     private val systemEventReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -71,7 +75,7 @@ class Vpn233Service : VpnService() {
                     screenInteractive = true
                     val app = Vpn233Application.instance
                     val s = app.settingsStore.settings.value
-                    MihomoBridge.setLogLevel(s.logLevel)
+                    MihomoBridge.restoreConfiguredLogLevel(s.logLevel)
                     if (_status.value == VpnStatus.RUNNING) {
                         ensureMonitorLoop()
                         serviceScope.launch {
@@ -112,7 +116,7 @@ class Vpn233Service : VpnService() {
             ACTION_REFRESH_MONITOR -> {
                 if (_status.value == VpnStatus.RUNNING) {
                     pushStaticOrRateNotification(_traffic.value, force = true)
-                    ensureMonitorLoop()
+                    restartMonitorLoop()
                 }
                 return START_STICKY
             }
@@ -310,11 +314,19 @@ class Vpn233Service : VpnService() {
         }
     }
 
+    @Synchronized
     private fun stopMonitorLoop() {
         monitorJob?.cancel()
         monitorJob = null
     }
 
+    @Synchronized
+    private fun restartMonitorLoop() {
+        stopMonitorLoop()
+        ensureMonitorLoop()
+    }
+
+    @Synchronized
     private fun ensureMonitorLoop() {
         if (!screenInteractive || _status.value != VpnStatus.RUNNING) return
         if (monitorJob?.isActive == true) return
@@ -327,7 +339,7 @@ class Vpn233Service : VpnService() {
                     pushStaticOrRateNotification(TrafficStats(), force = false)
                     break
                 }
-                val stats = MihomoBridge.queryTraffic()
+                val stats = if (uiActive) MihomoBridge.queryTraffic() else MihomoBridge.queryRates()
                 if (uiActive) {
                     _traffic.value = stats
                     _speedHistory.value = (_speedHistory.value + (stats.upNow to stats.downNow)).takeLast(45)
@@ -335,7 +347,7 @@ class Vpn233Service : VpnService() {
                 if (s.showTrafficInNotification) {
                     pushStaticOrRateNotification(stats, force = false)
                 }
-                delay(if (uiActive) 1000L else 2500L)
+                delay(if (uiActive) 1000L else 15_000L)
             }
         }
     }
@@ -389,6 +401,7 @@ class Vpn233Service : VpnService() {
 
     private fun registerPhysicalNetworkDnsCallback() {
         unregisterPhysicalNetworkDnsCallback()
+        dnsUpdateGate.reset()
         val cm = getSystemService(ConnectivityManager::class.java) ?: return
         val req = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -398,7 +411,7 @@ class Vpn233Service : VpnService() {
             override fun onAvailable(network: Network) {
                 val caps = cm.getNetworkCapabilities(network)
                 if (caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
-                    pushDns(cm.getLinkProperties(network))
+                    pushDns(network, cm.getLinkProperties(network))
                     val handle = network.networkHandle
                     val prev = lastPhysicalNetHandle
                     lastPhysicalNetHandle = handle
@@ -414,7 +427,7 @@ class Vpn233Service : VpnService() {
             override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
                 val caps = cm.getNetworkCapabilities(network)
                 if (caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
-                    pushDns(linkProperties)
+                    pushDns(network, linkProperties)
                 }
             }
 
@@ -422,7 +435,7 @@ class Vpn233Service : VpnService() {
                 val active = cm.activeNetwork
                 val caps = cm.getNetworkCapabilities(active)
                 if (active != null && caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == false) {
-                    pushDns(cm.getLinkProperties(active))
+                    pushDns(active, cm.getLinkProperties(active))
                     val handle = active.networkHandle
                     if (lastPhysicalNetHandle != null && lastPhysicalNetHandle != handle &&
                         _status.value == VpnStatus.RUNNING &&
@@ -438,9 +451,9 @@ class Vpn233Service : VpnService() {
         runCatching { cm.registerNetworkCallback(req, cb) }
     }
 
-    private fun pushDns(lp: LinkProperties?) {
+    private fun pushDns(network: Network, lp: LinkProperties?) {
         val list = lp?.dnsServers?.mapNotNull { it.hostAddress }?.distinct().orEmpty()
-        if (list.isNotEmpty()) {
+        if (dnsUpdateGate.shouldUpdate(network.networkHandle, list)) {
             MihomoBridge.notifyDnsChanged(list)
         }
     }
@@ -480,8 +493,14 @@ class Vpn233Service : VpnService() {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= TRIM_MEMORY_UI_HIDDEN) {
-            MihomoBridge.forceGc()
+        while (true) {
+            val previous = lastTrimGcMs.get()
+            val now = SystemClock.elapsedRealtime()
+            if (!MemoryTrimPolicy.shouldReclaim(level, now, previous)) return
+            if (lastTrimGcMs.compareAndSet(previous, now)) {
+                serviceScope.launch { MihomoBridge.forceGc() }
+                return
+            }
         }
     }
 
@@ -620,8 +639,12 @@ class Vpn233Service : VpnService() {
         }
 
         fun setUiVisible(context: Context, visible: Boolean) {
+            val changed = isUiVisible != visible
             isUiVisible = visible
-            if (visible && _status.value == VpnStatus.RUNNING) {
+            if (visible && changed) {
+                MihomoBridge.restoreConfiguredLogLevel(Vpn233Application.instance.settingsStore.settings.value.logLevel)
+            }
+            if (changed && _status.value == VpnStatus.RUNNING) {
                 val intent = Intent(context, Vpn233Service::class.java).setAction(ACTION_REFRESH_MONITOR)
                 runCatching { context.startService(intent) }
             }

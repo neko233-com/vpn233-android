@@ -22,8 +22,8 @@ android {
         applicationId = "com.neko233.vpn233"
         minSdk = 26
         targetSdk = 36
-        versionCode = 142
-        versionName = "1.4.2"
+        versionCode = 150
+        versionName = "1.5.0"
         buildConfigField("String", "MIHOMO_VERSION", "\"1.19.34\"")
 
         ndk {

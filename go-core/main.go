@@ -549,6 +549,16 @@ func goQueryTrafficJson() *C.char {
 	return C.CString(string(b))
 }
 
+//export goQueryRatesJson
+func goQueryRatesJson() *C.char {
+	up, down := statistic.DefaultManager.Now()
+	b, _ := json.Marshal(struct {
+		UpNow   int64 `json:"upNow"`
+		DownNow int64 `json:"downNow"`
+	}{up, down})
+	return C.CString(string(b))
+}
+
 //export goQueryConnectionsJson
 func goQueryConnectionsJson() *C.char {
 	snap := statistic.DefaultManager.Snapshot()
@@ -684,18 +694,15 @@ func goSetLogStreaming(enabled C.int) {
 
 //export goForceGc
 func goForceGc() {
-	runtime.GC()
 	debug.FreeOSMemory()
 }
 
 //export goSetIdleMode
 func goSetIdleMode(idle C.int) {
 	if idle != 0 {
-		if !logStreaming.Load() {
+		if !logStreaming.Load() && log.Level() < log.WARNING {
 			log.SetLevel(log.WARNING)
 		}
-		runtime.GC()
-		debug.FreeOSMemory()
 	}
 }
 

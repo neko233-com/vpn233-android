@@ -9,10 +9,11 @@ A sleek, ultra-low-power, high-performance **arm64-v8a** Android proxy client wr
 ## Key Features
 
 - **Ultra-Low Power & Background Stability**:
-  - **Zero WakeLock architecture**: packet forwarding runs purely event-driven inside Go/Linux `epoll` without holding partial wake locks.
-  - **Screen-aware monitoring**: when the screen turns off (`ACTION_SCREEN_OFF`) or the app is swiped from Recents, JNI traffic polling and notification binder updates halt completely, log verbosity trims down to `WARNING`, and Go releases unused heap pages cleanly.
+  - **Reduced background wakeups**: the app holds no permanent WakeLock; screen-off rate polling stops and background notification updates run about every 15 seconds without heap or connection scans. The core and Android may still run timers and network tasks.
+  - **Screen-aware monitoring**: less verbose logging is used while idle without forcing garbage collection on every screen-off event; memory can still be reclaimed under system memory pressure.
   - **Low-overhead defaults**: `MTU 9000` jumbo TUN frames, `UDPTimeout 60s`, `Mixed` TUN stack (kernel `System` TCP + `gVisor` UDP), and `find-process-mode: off` by default to eliminate per-connection Binder IPC overhead.
-  - **Background keep-alive**: 1-tap battery optimization exemption prompt (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`), Quick Settings Tile (`Vpn233TileService`), and boot auto-start (`Vpn233BootReceiver`).
+  - **Background operation**: battery optimization exemption, Android's always-on VPN settings, Quick Settings tile and boot auto-start are supported. Android, vendor and network conditions still affect availability.
+  - **Background subscription refresh**: one network-constrained Android JobScheduler job follows the next due subscription, with backoff on failures; Doze and vendor policies may defer execution.
   - After an app update, an active VPN is restored when Android permits it; an explicitly disconnected VPN stays disconnected.
 - **Full-featured `arm64-v8a` core and Geo databases**:
   - `libmihomo.so` is built with `cmfa,with_gvisor,with_low_memory`; EasyTier, Tailscale, ZeroTier and FakeTCP are not disabled at build time. Protocols may still require Android permissions, OS support, and compatible servers.
@@ -20,7 +21,7 @@ A sleek, ultra-low-power, high-performance **arm64-v8a** Android proxy client wr
   - Bundled full `geoip.metadb`, `GeoIP.dat`, `geosite.dat` and `ASN.mmdb` with online updates. Unknown GeoSite rules are reported instead of silently dropped; upgrades replace only exact legacy bundled files and preserve user-updated databases.
 - **Full Protocol, Subscription & Scenario Support**:
   - Imports standard Clash / Mihomo YAML subscriptions with a Mihomo-compatible default User-Agent and optional custom User-Agent, as well as Base64 proxy lists and common share links, with idempotent deduplication.
-  - **Global & Per-Profile YAML Merge & Auto-Update Policies**: Clash Verge style global Merge (`globalMergeYaml`, applied across every profile) plus per-profile `merge.yaml` overrides (`prepend-rules`, `append-rules`, `prepend-proxies`, `prepend-proxy-groups`, `nameserver`, `fake-ip-filter`, `nameserver-policy`). Global Merge is stored in local settings; per-profile Merge survives subscription updates and profile ZIP backups. Supports wake/foreground auto-update intervals, custom `User-Agent`, and `Auto` / `Proxy` / `Direct` fetch routing.
+  - **Global & Per-Profile YAML Merge & Auto-Update Policies**: Clash Verge style global Merge (`globalMergeYaml`, applied across every profile) plus per-profile `merge.yaml` overrides (`prepend-rules`, `append-rules`, `prepend-proxies`, `prepend-proxy-groups`, `nameserver`, `fake-ip-filter`, `nameserver-policy`). Global Merge is stored in local settings; per-profile Merge survives subscription updates and profile ZIP backups. Supports scheduled auto-update intervals, custom `User-Agent`, and `Auto` / `Proxy` / `Direct` fetch routing.
   - **Diagnostics, Rule-Match Tester & Network Resilience**: built-in **Diagnostics** tab to simulate any domain/IP:port against live Mihomo rules & view exact outbound chains, verify exit IP/country, flush DNS & FakeIP caches, display LAN `IP:port` copy pills, switch between **ZH / EN** UI live, use launcher **App Shortcuts**, and auto-close stale half-open sockets on Wi-Fi ↔ 5G switches.
   - Hot-switching active profiles (`activate_profile` / UI), switching proxy nodes (e.g. Korea → USA), or changing routing mode automatically **closes all previous active connections** so no stale sockets remain pinned to the prior route.
   - Built-in YAML editor with live core validation, batch subscription update, and `.zip` full backup export.
