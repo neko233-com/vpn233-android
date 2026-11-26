@@ -134,6 +134,8 @@ CGO_ENABLED=0 go test -v -tags "cmfa,with_gvisor,with_low_memory" ./...
 
 Release APK 输出路径：`app/build/outputs/apk/release/app-release.apk`
 
+发布前先提交源码，再构建并运行 `./scripts/verify-release-apk.ps1 -RequireClean`，确认 APK 内嵌的源码提交与当前提交一致。
+
 Windows 开发机可运行 `./scripts/install-release.ps1 -Serial <设备序列号>` 覆盖安装正式包，并自动恢复安装前的 VPN 连接状态。也可用 `-Apk <路径>` 指定发布包。设备需已授权 ADB 和 VPN；部分厂商系统仍可能要求确认安装或阻止后台恢复，脚本不会关闭系统安全功能。
 
 正式签名需要本机的 `keystore.properties` 和对应密钥库；这些文件不纳入 Git。未配置正式密钥时，Release 构建只生成 `app-release-unsigned.apk`，不会回退到调试签名。本地单元测试和构建不能代替设备上的 VPN 连接验证。

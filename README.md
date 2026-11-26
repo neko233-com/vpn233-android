@@ -134,6 +134,8 @@ Rebuild native shared library:
 
 Release APK output: `app/build/outputs/apk/release/app-release.apk`
 
+For a release, commit the source before building, then run `./scripts/verify-release-apk.ps1 -RequireClean` to check the APK's embedded revision against the current commit.
+
 On Windows, `./scripts/install-release.ps1 -Serial <device-serial>` installs the release and restores the prior VPN state. Use `-Apk <path>` for another release APK. ADB and VPN authorization are required; some vendor systems may still require install confirmation or block background restoration.
 
 Production signing requires a local `keystore.properties` and its keystore, neither of which is tracked in Git. Without production signing credentials, the release build produces `app-release-unsigned.apk` instead of silently using a debug key. Local unit tests and builds do not replace an on-device VPN connection test.
