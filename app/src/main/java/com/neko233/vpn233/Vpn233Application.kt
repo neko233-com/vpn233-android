@@ -35,7 +35,7 @@ class Vpn233Application : Application() {
             }
             MihomoBridge.init(
                 geoDatabaseManager.homeDir.absolutePath,
-                "v1.19.34 (vpn233 ${BuildConfig.VERSION_NAME})"
+                "v${BuildConfig.MIHOMO_VERSION} (vpn233 ${BuildConfig.VERSION_NAME})"
             )
             profileRepository = ProfileRepository(this)
             initialized = true

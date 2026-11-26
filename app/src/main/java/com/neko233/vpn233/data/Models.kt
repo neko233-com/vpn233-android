@@ -124,6 +124,7 @@ data class AppSettings(
     val overrideDestination: Boolean = true,
     val unifiedDelay: Boolean = true,
     val tcpConcurrent: Boolean = true,
+    val followProfileOptions: Boolean = false,
     val geodataMode: Boolean = false,
     val findProcessMode: String = "off",
     val logLevel: String = "warning",
@@ -224,7 +225,8 @@ data class InstalledAppInfo(
 data class GeoDbStatus(
     val geoIpBytes: Long,
     val geoSiteBytes: Long,
-    val asnBytes: Long
+    val asnBytes: Long,
+    val geoIpDatBytes: Long = 0L
 ) {
     val isGeoIpFull: Boolean get() = geoIpBytes > 1_500_000L
     val isGeoSiteFull: Boolean get() = geoSiteBytes > 800_000L

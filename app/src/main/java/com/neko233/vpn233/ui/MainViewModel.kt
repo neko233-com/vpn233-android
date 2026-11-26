@@ -679,8 +679,8 @@ class MainViewModel(private val app: Application) {
         }
     }
 
-    fun resetGeoDatabasesToLite() {
-        _geoDbStatus.value = vpnApp.geoDatabaseManager.resetToLiteDatabases()
-        _toastMessage.value = "已恢复内置精简版 Geo 数据库"
+    fun resetGeoDatabasesToBundled() {
+        _geoDbStatus.value = vpnApp.geoDatabaseManager.resetToBundledDatabases()
+        _toastMessage.value = "已恢复内置 Geo 数据库"
     }
 }

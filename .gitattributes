@@ -1,0 +1,5 @@
+# Mihomo Geo databases are binary protobuf/MMDB files, even when Git detects text.
+app/src/main/assets/*.dat binary
+app/src/main/assets/*.metadb binary
+app/src/main/assets/*.mmdb binary
+app/src/main/jniLibs/**/*.so binary

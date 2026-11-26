@@ -4,7 +4,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 if (-not $NdkDir) {
-    $NdkDir = "$env:LOCALAPPDATA\JiguangMatch\AndroidReleaseTools\SDK\ndk\27.2.12479018"
+    $sdkDir = if ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } elseif ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { $null }
+    $localProperties = Join-Path $PSScriptRoot "..\local.properties"
+    if (-not $sdkDir -and (Test-Path -LiteralPath $localProperties)) {
+        $line = Get-Content -LiteralPath $localProperties | Where-Object { $_ -match '^sdk\.dir=' } | Select-Object -First 1
+        if ($line) { $sdkDir = $line.Substring(8).Replace('\:', ':').Replace('\\', '\') }
+    }
+    if ($sdkDir) { $NdkDir = Join-Path $sdkDir 'ndk/27.2.12479018' }
+}
+if (-not $NdkDir -or -not (Test-Path -LiteralPath $NdkDir)) {
+    throw 'Android NDK not found. Set ANDROID_NDK_HOME or configure the Android SDK in local.properties.'
 }
 
 $NdkBin = Join-Path $NdkDir "toolchains\llvm\prebuilt\windows-x86_64\bin"
@@ -20,7 +29,7 @@ try {
     $env:CXX = Join-Path $NdkBin "aarch64-linux-android24-clang++.cmd"
 
     go build -buildmode=c-shared `
-        -tags "cmfa,with_gvisor,with_low_memory,no_easytier,no_tailscale,no_zerotier,no_fake_tcp" `
+        -tags "cmfa,with_gvisor,with_low_memory" `
         -trimpath -ldflags="-s -w" `
         -o (Join-Path $OutDir "libmihomo.so") .
     if ($LASTEXITCODE -ne 0) { throw "go build failed with exit code $LASTEXITCODE" }

@@ -22,8 +22,9 @@ android {
         applicationId = "com.neko233.vpn233"
         minSdk = 26
         targetSdk = 36
-        versionCode = 130
-        versionName = "1.3.0"
+        versionCode = 140
+        versionName = "1.4.0"
+        buildConfigField("String", "MIHOMO_VERSION", "\"1.19.34\"")
 
         ndk {
             abiFilters += "arm64-v8a"

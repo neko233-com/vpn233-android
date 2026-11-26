@@ -33,6 +33,7 @@ import (
 	"github.com/metacubex/mihomo/component/process"
 	"github.com/metacubex/mihomo/config"
 	C2 "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/constant/features"
 	"github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/dns"
 	"github.com/metacubex/mihomo/hub/executor"
@@ -700,7 +701,7 @@ func goSetIdleMode(idle C.int) {
 
 //export goCoreVersion
 func goCoreVersion() *C.char {
-	return C.CString("Mihomo " + C2.Version + " (Go " + runtime.Version() + ", API " + strconv.Itoa(runtime.NumCPU()) + "c)")
+	return C.CString("Mihomo " + C2.Version + " (Go " + runtime.Version() + ", API " + strconv.Itoa(runtime.NumCPU()) + "c; tags=" + strings.Join(features.Tags(), ",") + ")")
 }
 
 func main() {}

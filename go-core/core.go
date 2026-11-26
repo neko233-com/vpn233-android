@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -17,7 +16,6 @@ import (
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
 	"github.com/metacubex/mihomo/common/orderedmap"
 	"github.com/metacubex/mihomo/common/utils"
-	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/config"
 	C2 "github.com/metacubex/mihomo/constant"
@@ -51,16 +49,16 @@ type OverrideOptions struct {
 }
 
 type MergeConfig struct {
-	PrependRules       []string                              `yaml:"prepend-rules"`
-	AppendRules        []string                              `yaml:"append-rules"`
-	PrependProxies     []map[string]any                      `yaml:"prepend-proxies"`
-	AppendProxies      []map[string]any                      `yaml:"append-proxies"`
-	PrependProxyGroups []map[string]any                      `yaml:"prepend-proxy-groups"`
-	AppendProxyGroups  []map[string]any                      `yaml:"append-proxy-groups"`
-	Rules              []string                              `yaml:"rules"`
-	NameServers        []string                              `yaml:"nameserver"`
-	FakeIPFilter       []string                              `yaml:"fake-ip-filter"`
-	NameServerPolicy   *orderedmap.OrderedMap[string, any]   `yaml:"nameserver-policy"`
+	PrependRules       []string                            `yaml:"prepend-rules"`
+	AppendRules        []string                            `yaml:"append-rules"`
+	PrependProxies     []map[string]any                    `yaml:"prepend-proxies"`
+	AppendProxies      []map[string]any                    `yaml:"append-proxies"`
+	PrependProxyGroups []map[string]any                    `yaml:"prepend-proxy-groups"`
+	AppendProxyGroups  []map[string]any                    `yaml:"append-proxy-groups"`
+	Rules              []string                            `yaml:"rules"`
+	NameServers        []string                            `yaml:"nameserver"`
+	FakeIPFilter       []string                            `yaml:"fake-ip-filter"`
+	NameServerPolicy   *orderedmap.OrderedMap[string, any] `yaml:"nameserver-policy"`
 }
 
 type matchResultDTO struct {
@@ -255,7 +253,6 @@ func resolveAndPatchConfig(profileDir string, overrideJson string) (*config.RawC
 	}
 
 	rawCfg.ProxyGroup = sanitizeBuiltinShadowGroups(rawCfg.ProxyGroup)
-	rawCfg.Rule = filterUnavailableGeoSiteRules(rawCfg.Rule)
 
 	if len(rawCfg.Listeners) > 0 {
 		filtered := make([]map[string]any, 0, len(rawCfg.Listeners))
@@ -285,9 +282,6 @@ func resolveAndPatchConfig(profileDir string, overrideJson string) (*config.RawC
 	patchProviderMap(rawCfg.ProxyProvider, "proxy")
 	patchProviderMap(rawCfg.RuleProvider, "rule")
 
-	if len(rawCfg.Proxy) == 0 && len(rawCfg.ProxyProvider) == 0 {
-		return nil, errors.New("profile contains neither proxies nor proxy-providers")
-	}
 	if rawCfg.ClashForAndroid.UiSubtitlePattern != "" {
 		if _, err := regexp2.Compile(rawCfg.ClashForAndroid.UiSubtitlePattern, 0); err != nil {
 			return nil, fmt.Errorf("invalid ui-subtitle-pattern: %w", err)
@@ -388,41 +382,6 @@ func sanitizeBuiltinShadowGroups(groups []map[string]any) []map[string]any {
 			continue
 		}
 		out = append(out, g)
-	}
-	return out
-}
-
-// Skip GEOSITE rules whose category is missing in the bundled lite geosite.dat so
-// offline imports and first-time VPN startup do not abort before GeoDB upgrade.
-func filterUnavailableGeoSiteRules(rules []string) []string {
-	hasGeoSite := false
-	for _, r := range rules {
-		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(r)), "GEOSITE,") {
-			hasGeoSite = true
-			break
-		}
-	}
-	if !hasGeoSite {
-		return rules
-	}
-	if _, err := os.Stat(C2.Path.GeoSite()); err != nil {
-		return rules
-	}
-	if err := geodata.InitGeoSite(); err != nil {
-		return rules
-	}
-	out := make([]string, 0, len(rules))
-	for _, r := range rules {
-		trimmed := strings.TrimSpace(r)
-		parts := strings.Split(trimmed, ",")
-		if len(parts) >= 2 && strings.EqualFold(strings.TrimSpace(parts[0]), "GEOSITE") {
-			code := strings.TrimSpace(parts[1])
-			if _, err := geodata.LoadGeoSiteMatcher(code); err != nil {
-				log.Warnln("Skipping unavailable GEOSITE rule %q with current geosite.dat: %v", code, err)
-				continue
-			}
-		}
-		out = append(out, r)
 	}
 	return out
 }

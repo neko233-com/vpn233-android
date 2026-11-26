@@ -435,7 +435,7 @@ private fun Vpn233AppRoot(
                     onLoadApps = viewModel::loadInstalledAppsIfNeeded,
                     onOpenRules = { showRules = true },
                     onUpgradeGeoDb = viewModel::upgradeGeoDatabases,
-                    onResetGeoDb = viewModel::resetGeoDatabasesToLite,
+                    onResetGeoDb = viewModel::resetGeoDatabasesToBundled,
                     onExportAllBackup = viewModel::exportAllBackup,
                     onToast = viewModel::showToast
                 )

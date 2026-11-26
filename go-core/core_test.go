@@ -367,7 +367,7 @@ nameserver-policy:
 	}
 }
 
-func TestResolveAndPatchConfigRejectsEmptyProxies(t *testing.T) {
+func TestResolveAndPatchConfigAllowsDirectOnly(t *testing.T) {
 	dir := t.TempDir()
 	yamlContent := `
 rules:
@@ -376,12 +376,16 @@ rules:
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveAndPatchConfig(dir, ""); err == nil {
-		t.Fatalf("expected error when neither proxies nor proxy-providers exist")
+	rawCfg, err := resolveAndPatchConfig(dir, "")
+	if err != nil {
+		t.Fatalf("direct-only profile must be accepted: %v", err)
+	}
+	if _, err := config.ParseRawConfig(rawCfg); err != nil {
+		t.Fatalf("direct-only profile must parse: %v", err)
 	}
 }
 
-func TestLiteGeoSiteAndShadowDirectGroupTolerance(t *testing.T) {
+func TestFullGeoSiteRulesAndShadowDirectGroupTolerance(t *testing.T) {
 	dir := t.TempDir()
 	C2.SetHomeDir(dir)
 	t.Cleanup(func() {
@@ -391,12 +395,12 @@ func TestLiteGeoSiteAndShadowDirectGroupTolerance(t *testing.T) {
 	})
 
 	assetsDir := filepath.Join("..", "app", "src", "main", "assets")
-	for _, asset := range []string{"geosite.dat", "geoip.metadb"} {
-		data, err := os.ReadFile(filepath.Join(assetsDir, asset))
+	for src, dest := range map[string]string{"geosite.dat": "GeoSite.dat", "geoip.metadb": "geoip.metadb", "GeoIP.dat": "GeoIP.dat", "ASN.mmdb": "ASN.mmdb"} {
+		data, err := os.ReadFile(filepath.Join(assetsDir, src))
 		if err != nil {
-			t.Skipf("bundled asset %s not found: %v", asset, err)
+			t.Fatalf("bundled asset %s not found: %v", src, err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, asset), data, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, dest), data, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -432,7 +436,23 @@ rules:
 	if err != nil {
 		t.Fatalf("resolveAndPatchConfig failed: %v", err)
 	}
+	if len(rawCfg.Rule) != 6 {
+		t.Fatalf("GeoSite rules must not be silently dropped: %v", rawCfg.Rule)
+	}
 	if _, err := config.ParseRawConfig(rawCfg); err != nil {
-		t.Fatalf("ParseRawConfig failed with lite geosite.dat: %v", err)
+		t.Fatalf("ParseRawConfig failed with the bundled geosite database: %v", err)
+	}
+
+	// IP-ASN and GeoIP.dat mode must both work without downloading a database.
+	rawCfg.Rule = []string{"IP-ASN,1,DIRECT", "GEOIP,CN,DIRECT", "MATCH,DIRECT"}
+	rawCfg.GeodataMode = true
+	if _, err := config.ParseRawConfig(rawCfg); err != nil {
+		t.Fatalf("full GeoIP.dat and ASN databases must parse offline: %v", err)
+	}
+
+	// An unknown category must be reported as an error instead of changing routing silently.
+	rawCfg.Rule = []string{"GEOSITE,vpn233-category-that-does-not-exist,DIRECT", "MATCH,DIRECT"}
+	if _, err := config.ParseRawConfig(rawCfg); err == nil {
+		t.Fatal("missing GeoSite category must not be silently skipped")
 	}
 }

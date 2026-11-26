@@ -223,6 +223,9 @@ fun SettingsScreen(
 
         // 3. Meta & Override Features
         SectionCard("DNS 与 Meta 特性覆写") {
+            ToggleRow("遵循配置的内核选项", "开启后嗅探、延迟、并发、GeoData 和进程匹配使用配置文件中的值", settings.followProfileOptions) { v ->
+                onUpdateSettings(true) { it.copy(followProfileOptions = v) }
+            }
             ToggleRow("追加系统 DNS (system://)", "自动注入物理网络 DNS 处理兜底解析", settings.appendSystemDns) { v ->
                 onUpdateSettings(true) { it.copy(appendSystemDns = v) }
             }
@@ -230,16 +233,16 @@ fun SettingsScreen(
                 onUpdateSettings(true) { it.copy(forceDnsMapping = v) }
             }
             ToggleRow("域名嗅探 (Sniffer)", "识别 TLS/HTTP/QUIC 真实域名用于规则匹配", settings.sniffing) { v ->
-                onUpdateSettings(true) { it.copy(sniffing = v) }
+                onUpdateSettings(true) { it.copy(sniffing = v, followProfileOptions = false) }
             }
             ToggleRow("覆写目标地址", "将嗅探到的域名写入路由目标", settings.overrideDestination) { v ->
-                onUpdateSettings(true) { it.copy(overrideDestination = v) }
+                onUpdateSettings(true) { it.copy(overrideDestination = v, followProfileOptions = false) }
             }
             ToggleRow("统一延迟 (Unified Delay)", "消除不同协议握手差异，更客观反映延迟", settings.unifiedDelay) { v ->
-                onUpdateSettings(true) { it.copy(unifiedDelay = v) }
+                onUpdateSettings(true) { it.copy(unifiedDelay = v, followProfileOptions = false) }
             }
             ToggleRow("TCP 并发拨号", "同时尝试解析出的多个 IP 取最快连接", settings.tcpConcurrent) { v ->
-                onUpdateSettings(true) { it.copy(tcpConcurrent = v) }
+                onUpdateSettings(true) { it.copy(tcpConcurrent = v, followProfileOptions = false) }
             }
             Text("进程匹配模式 (关闭最省电)", color = p.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
             Spacer(Modifier.height(6.dp))
@@ -248,7 +251,7 @@ fun SettingsScreen(
                     val sel = settings.findProcessMode == modeVal
                     Surface(
                         modifier = Modifier.weight(1f),
-                        onClick = { onUpdateSettings(true) { it.copy(findProcessMode = modeVal) } },
+                        onClick = { onUpdateSettings(true) { it.copy(findProcessMode = modeVal, followProfileOptions = false) } },
                         shape = RoundedCornerShape(10.dp),
                         color = if (sel) p.accent.copy(alpha = 0.18f) else p.cardElevated,
                         border = if (sel) BorderStroke(1.dp, p.accent) else null
@@ -276,10 +279,10 @@ fun SettingsScreen(
             ClickRow("延迟测试 URL", settings.delayTestUrl) { showDelayUrlEditor = true }
         }
 
-        // 4. Geo Databases (APK Size Optimization)
-        SectionCard("Geo 数据库 (轻量化包体)") {
+        // 4. Geo Databases
+        SectionCard("Geo 数据库") {
             Text(
-                "为减小 APK 安装包体积，内置精简版 GeoIP (${Vpn233Service.formatBytes(geoDbStatus.geoIpBytes)}) 与 GeoSite (${Vpn233Service.formatBytes(geoDbStatus.geoSiteBytes)})。如需全量区域匹配可在线一键升级。",
+                "内置完整 GeoIP、GeoSite 和 ASN 数据库，支持在线更新。",
                 color = p.textSecondary,
                 fontSize = 11.sp,
                 lineHeight = 16.sp
@@ -288,7 +291,8 @@ fun SettingsScreen(
             Text(
                 text = "GeoIP: ${if (geoDbStatus.isGeoIpFull) "完整版" else "精简版"} (${Vpn233Service.formatBytes(geoDbStatus.geoIpBytes)}) · " +
                     "GeoSite: ${if (geoDbStatus.isGeoSiteFull) "完整版" else "精简版"} (${Vpn233Service.formatBytes(geoDbStatus.geoSiteBytes)}) · " +
-                    "ASN: ${if (geoDbStatus.hasAsn) Vpn233Service.formatBytes(geoDbStatus.asnBytes) else "未安装"}",
+                    "ASN: ${if (geoDbStatus.hasAsn) Vpn233Service.formatBytes(geoDbStatus.asnBytes) else "未安装"} · " +
+                    "GeoIP.dat: ${Vpn233Service.formatBytes(geoDbStatus.geoIpDatBytes)}",
                 color = p.textPrimary,
                 fontSize = 11.sp
             )
@@ -300,7 +304,7 @@ fun SettingsScreen(
                     color = p.accent
                 ) {
                     Text(
-                        "在线升级完整版",
+                        "在线更新",
                         color = Color(0xFF042117),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
@@ -313,7 +317,7 @@ fun SettingsScreen(
                     color = p.cardElevated
                 ) {
                     Text(
-                        "恢复精简版",
+                        "恢复内置版本",
                         color = p.textPrimary,
                         fontSize = 12.sp,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)

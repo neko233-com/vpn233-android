@@ -13,17 +13,18 @@ A sleek, ultra-low-power, high-performance **arm64-v8a** Android proxy client wr
   - **Screen-aware monitoring**: when the screen turns off (`ACTION_SCREEN_OFF`) or the app is swiped from Recents, JNI traffic polling and notification binder updates halt completely, log verbosity trims down to `WARNING`, and Go releases unused heap pages cleanly.
   - **Low-overhead defaults**: `MTU 9000` jumbo TUN frames, `UDPTimeout 60s`, `Mixed` TUN stack (kernel `System` TCP + `gVisor` UDP), and `find-process-mode: off` by default to eliminate per-connection Binder IPC overhead.
   - **Background keep-alive**: 1-tap battery optimization exemption prompt (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`), Quick Settings Tile (`Vpn233TileService`), and boot auto-start (`Vpn233BootReceiver`).
-- **Compact `arm64-v8a` APK (~16.75 MB)**:
-  - `arm64-v8a` native ABI only (`libmihomo.so` compiled with `-tags "cmfa,with_gvisor,with_low_memory,no_easytier,no_tailscale,no_zerotier,no_fake_tcp"`, `-trimpath -ldflags="-s -w"`, and `llvm-strip --strip-unneeded`).
+- **Full-featured `arm64-v8a` core and Geo databases**:
+  - `libmihomo.so` is built with `cmfa,with_gvisor,with_low_memory`; EasyTier, Tailscale, ZeroTier and FakeTCP are not disabled at build time. Protocols may still require Android permissions, OS support, and compatible servers.
   - R8 full minification, resource shrinking, `zh`/`en` locale filtering, and custom `ImageVector` icons (no `material-icons-extended` bloat).
-  - Lightweight bootstrap `geoip.metadb` + `geosite.dat` (`~246 KB` compressed in APK) with 1-tap online upgrade to full GeoIP / GeoSite / ASN databases via jsDelivr.
+  - Bundled full `geoip.metadb`, `GeoIP.dat`, `geosite.dat` and `ASN.mmdb` with online updates. Unknown GeoSite rules are reported instead of silently dropped; upgrades replace only exact legacy bundled files and preserve user-updated databases.
 - **Full Protocol, Subscription & Scenario Support**:
-  - Imports standard Clash / Mihomo YAML subscriptions (parses `Subscription-Userinfo`, `Profile-Update-Interval`, `Content-Disposition`), Base64 proxy lists, and share links (`vmess://`, `vless://`, `trojan://`, `ss://`, `hy2://`, `hysteria2://`, `tuic://`, `socks5://`) with **idempotent deduplication** (repeated URL, file, ZIP, clipboard, or ADB imports update in-place without duplicates or needless tunnel resets).
+  - Imports standard Clash / Mihomo YAML subscriptions with a Mihomo-compatible default User-Agent and optional custom User-Agent, as well as Base64 proxy lists and common share links, with idempotent deduplication.
   - **Global & Per-Profile YAML Merge & Auto-Update Policies**: Clash Verge style global Merge (`globalMergeYaml`, applied across every profile) plus per-profile `merge.yaml` overrides (`prepend-rules`, `append-rules`, `prepend-proxies`, `prepend-proxy-groups`, `nameserver`, `fake-ip-filter`, `nameserver-policy`). Global Merge is stored in local settings; per-profile Merge survives subscription updates and profile ZIP backups. Supports wake/foreground auto-update intervals, custom `User-Agent`, and `Auto` / `Proxy` / `Direct` fetch routing.
   - **Diagnostics, Rule-Match Tester & Network Resilience**: built-in **Diagnostics** tab to simulate any domain/IP:port against live Mihomo rules & view exact outbound chains, verify exit IP/country, flush DNS & FakeIP caches, display LAN `IP:port` copy pills, switch between **ZH / EN** UI live, use launcher **App Shortcuts**, and auto-close stale half-open sockets on Wi-Fi ↔ 5G switches.
   - Hot-switching active profiles (`activate_profile` / UI), switching proxy nodes (e.g. Korea → USA), or changing routing mode automatically **closes all previous active connections** so no stale sockets remain pinned to the prior route.
   - Built-in YAML editor with live core validation, batch subscription update, and `.zip` full backup export.
   - Supports **Rule / Global / Direct** live mode switching. Global mode initially prefers the `PROXY` group and retains valid user selections per profile. Also supports **Allow LAN** sharing (`0.0.0.0:<port>`), **IPv6** dual-stack, **Per-App Proxy** (allowlist/denylist with app icon search), **DNS Hijack**, **Sniffer**, **FakeIP**, and **Proxy/Rule Providers**.
+  - The profile-options setting preserves subscription-defined sniffing, delay, concurrency, GeoData and process matching; the app still controls routing mode, IPv6, TUN and explicit user overrides.
 - **Interactive Rule Editor & Live Connection Actions**:
   - Visual rule builder supporting `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-REGEX`, `IP-CIDR`, `IP-CIDR6`, `SRC-IP-CIDR`, `GEOIP`, `GEOSITE`, `IP-ASN`, `DST-PORT`, `SRC-PORT`, `NETWORK`, `PROCESS-NAME`, `PROCESS-PATH`, `RULE-SET`, and raw `AND`/`OR`/`SUB-RULE`/`MATCH` expressions with `no-resolve`, ordering (`PREPEND` or `BEFORE_MATCH`), toggle switches, and live hot-reload.
   - Inspect all active core rules and create rules with 1 tap directly from any entry in **Active Connections**.
@@ -117,7 +118,7 @@ adb shell am start -n com.neko233.vpn233/.MainActivity --ez open_rules true
 
 ```bash
 cd go-core
-CGO_ENABLED=0 go test -v -tags "cmfa,with_gvisor,with_low_memory,no_easytier,no_tailscale,no_zerotier,no_fake_tcp" ./...
+CGO_ENABLED=0 go test -v -tags "cmfa,with_gvisor,with_low_memory" ./...
 ```
 
 Rebuild native shared library:

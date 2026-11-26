@@ -91,6 +91,7 @@ class SettingsStore(context: Context) {
                 overrideDestination = obj.optBoolean("overrideDestination", true),
                 unifiedDelay = obj.optBoolean("unifiedDelay", true),
                 tcpConcurrent = obj.optBoolean("tcpConcurrent", true),
+                followProfileOptions = obj.optBoolean("followProfileOptions", false),
                 geodataMode = obj.optBoolean("geodataMode", false),
                 findProcessMode = obj.optString("findProcessMode", "off"),
                 logLevel = obj.optString("logLevel", "warning"),
@@ -148,6 +149,7 @@ class SettingsStore(context: Context) {
             put("overrideDestination", s.overrideDestination)
             put("unifiedDelay", s.unifiedDelay)
             put("tcpConcurrent", s.tcpConcurrent)
+            put("followProfileOptions", s.followProfileOptions)
             put("geodataMode", s.geodataMode)
             put("findProcessMode", s.findProcessMode)
             put("logLevel", s.logLevel)
@@ -198,14 +200,9 @@ class SettingsStore(context: Context) {
         val obj = JSONObject().apply {
             put("mode", s.routingMode.coreValue)
             put("ipv6", s.allowIpv6)
-            put("unifiedDelay", s.unifiedDelay)
-            put("tcpConcurrent", s.tcpConcurrent)
-            put("geodataMode", s.geodataMode)
-            put("findProcessMode", s.findProcessMode)
+            CoreProfileOptions.putOverrides(this, s)
             put("appendSystemDns", s.appendSystemDns)
             put("forceDnsMapping", s.forceDnsMapping)
-            put("sniffing", s.sniffing)
-            put("overrideDestination", s.overrideDestination)
             put("logLevel", s.logLevel)
             if (prepend.isNotEmpty()) {
                 put("prependRules", JSONArray(prepend))

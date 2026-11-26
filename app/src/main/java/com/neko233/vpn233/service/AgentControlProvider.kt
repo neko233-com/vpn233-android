@@ -162,6 +162,7 @@ class AgentControlProvider : ContentProvider() {
                 }
                 "get_settings" -> okBundle(JSONObject(app.settingsStore.toOverrideJson()).apply {
                     val s = app.settingsStore.settings.value
+                    put("followProfileOptions", s.followProfileOptions)
                     put("tunStack", s.tunStack.coreValue)
                     put("allowLan", s.allowLan)
                     put("systemProxy", s.systemProxy)
@@ -184,6 +185,7 @@ class AgentControlProvider : ContentProvider() {
                     val g = app.geoDatabaseManager.getStatus()
                     okBundle(JSONObject().apply {
                         put("geoIpBytes", g.geoIpBytes)
+                        put("geoIpDatBytes", g.geoIpDatBytes)
                         put("geoSiteBytes", g.geoSiteBytes)
                         put("asnBytes", g.asnBytes)
                         put("isGeoIpFull", g.isGeoIpFull)
@@ -195,13 +197,14 @@ class AgentControlProvider : ContentProvider() {
                     val g = runBlocking(Dispatchers.IO) {
                         app.geoDatabaseManager.upgradeToFullDatabases(runningProxyPort(app)) {}.getOrThrow()
                     }
-                    if (Vpn233Service.status.value == VpnStatus.RUNNING) {
+                    if (Vpn233Service.isActiveOrStarting()) {
                         MihomoBridge.closeAllConnections()
                         Vpn233Service.reload(app)
-                        waitUntilSettled(timeoutMs = 3500L)
+                        requireRunning(timeoutMs = 10000L)
                     }
                     okBundle(JSONObject().apply {
                         put("geoIpBytes", g.geoIpBytes)
+                        put("geoIpDatBytes", g.geoIpDatBytes)
                         put("geoSiteBytes", g.geoSiteBytes)
                         put("asnBytes", g.asnBytes)
                         put("isGeoIpFull", g.isGeoIpFull)
@@ -808,12 +811,13 @@ class AgentControlProvider : ContentProvider() {
                 "allowBypass" -> s.copy(allowBypass = b)
                 "appendSystemDns" -> s.copy(appendSystemDns = b)
                 "forceDnsMapping" -> s.copy(forceDnsMapping = b)
-                "sniffing" -> s.copy(sniffing = b)
-                "overrideDestination" -> s.copy(overrideDestination = b)
-                "unifiedDelay" -> s.copy(unifiedDelay = b)
-                "tcpConcurrent" -> s.copy(tcpConcurrent = b)
-                "geodataMode" -> s.copy(geodataMode = b)
-                "findProcessMode" -> s.copy(findProcessMode = value)
+                "followProfileOptions" -> s.copy(followProfileOptions = b)
+                "sniffing" -> s.copy(sniffing = b, followProfileOptions = false)
+                "overrideDestination" -> s.copy(overrideDestination = b, followProfileOptions = false)
+                "unifiedDelay" -> s.copy(unifiedDelay = b, followProfileOptions = false)
+                "tcpConcurrent" -> s.copy(tcpConcurrent = b, followProfileOptions = false)
+                "geodataMode" -> s.copy(geodataMode = b, followProfileOptions = false)
+                "findProcessMode" -> s.copy(findProcessMode = value, followProfileOptions = false)
                 "logLevel" -> s.copy(logLevel = value)
                 "accessControlMode" -> s.copy(accessControlMode = AccessControlMode.valueOf(value.uppercase()))
                 "accessControlPackages" -> s.copy(
@@ -836,10 +840,10 @@ class AgentControlProvider : ContentProvider() {
         }
         if (key == "logLevel") MihomoBridge.setLogLevel(value)
         if (key == "showTrafficInNotification") Vpn233Service.refreshNotification(app)
-        if (reloadNeeded && Vpn233Service.status.value == VpnStatus.RUNNING) {
+        if (reloadNeeded && Vpn233Service.isActiveOrStarting()) {
             MihomoBridge.closeAllConnections()
             Vpn233Service.reload(app)
-            waitUntilSettled(timeoutMs = 3500L)
+            requireRunning(timeoutMs = 10000L)
         }
         return okBundle(JSONObject().put("key", key).put("value", value).put("reloaded", reloadNeeded))
     }

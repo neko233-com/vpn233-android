@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-基于 **Kotlin + Jetpack Compose** 与 **Mihomo (Clash.Meta v1.19.34)** 内核打造的高颜值、超低功耗、极致精简包体（仅 `arm64-v8a`）Android 独立代理客户端。
+基于 **Kotlin + Jetpack Compose** 与 **Mihomo (Clash.Meta v1.19.34)** 内核打造的 Android 独立代理客户端，支持 `arm64-v8a`。
 
 ---
 
@@ -13,17 +13,18 @@
   - **息屏感知休眠**：监听系统亮灭屏（`ACTION_SCREEN_OFF` / `ACTION_SCREEN_ON`），息屏或划掉后台卡片（`onTaskRemoved`）后自动停止 JNI 速率轮询与通知栏高频 Binder 刷新，并将核心日志自动降级为 `WARNING`、释放空闲堆内存。
   - **极致低开销默认策略**：TUN 默认 `MTU 9000`、`UDPTimeout 60s`、`Mixed` 栈（TCP 走内核 System 栈、UDP 走 gVisor），且默认关闭每连接进程 UID 查询（`find-process-mode: off`），大幅减少 Binder IPC 损耗。
   - **完善保活能力**：支持首页/设置页一键申请忽略电池优化（`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`）、系统下拉快捷开关瓷贴（`Vpn233TileService`）与开机自动连接（`Vpn233BootReceiver`）。
-- **极致精简 `arm64-v8a` 包体（约 16.75 MB）**：
-  - 仅保留 `arm64-v8a` 架构，单库 `libmihomo.so` 使用 `-tags "cmfa,with_gvisor,with_low_memory,no_easytier,no_tailscale,no_zerotier,no_fake_tcp"` 与 `-trimpath -ldflags="-s -w"` + `llvm-strip` 裁剪。
+- **完整功能 `arm64-v8a` 内核与 Geo 数据**：
+  - `libmihomo.so` 使用 `cmfa,with_gvisor,with_low_memory` 构建，不关闭 EasyTier、Tailscale、ZeroTier 或 FakeTCP；具体协议仍依赖 Android 权限、系统能力和服务端支持。
   - 开启 R8 全量混淆与资源收缩、语言资源仅保留 `zh`/`en`、自定义精简矢量图标（零 `material-icons-extended` 臃肿依赖）。
-  - 内置精简版 `geoip.metadb` + `geosite.dat`（APK 内仅占用约 `246 KB`），支持设置页一键在线升级为完整版 GeoIP / GeoSite / ASN 数据库。
+  - 内置完整 `geoip.metadb`、`GeoIP.dat`、`geosite.dat` 与 `ASN.mmdb`，支持在线更新；不会静默删除不受支持的 GeoSite 规则。升级时仅替换与旧版内置精简库完全一致的文件，保留用户自行更新的数据库。
 - **全场景协议、订阅与网络适配**：
-  - 支持标准 Clash / Mihomo YAML 订阅链接导入（自动解析 `Subscription-Userinfo` 流量配额、`Profile-Update-Interval` 与文件名）、Base64 订阅自动解码、常见节点分享链接直转 YAML（`vmess://`、`vless://`、`trojan://`、`ss://`、`hy2://`、`hysteria2://`、`tuic://`、`socks5://`），并支持 **幂等去重导入**（重复导入同 URL、同文件、ZIP、剪贴板或 ADB 配置不会重复生成条目）。
+  - 支持标准 Clash / Mihomo YAML 订阅链接导入（自动解析 `Subscription-Userinfo` 流量配额、`Profile-Update-Interval` 与文件名），默认使用 Mihomo 标识请求订阅，且保留自定义 `User-Agent`；支持 Base64、常见节点分享链接与幂等去重导入。
   - **全局与单配置 YAML Merge 及更新策略**：支持 Clash Verge 风格 **全局 Merge 覆写**（对所有订阅生效）以及每配置独立 `merge.yaml`（支持 `prepend-rules`、`append-rules`、`prepend-proxies`、`prepend-proxy-groups`、`nameserver`、`fake-ip-filter`、`nameserver-policy`）。全局 Merge 保存在本机设置中，单配置 Merge 随订阅更新与配置 ZIP 备份保留；支持亮屏/前台自动更新周期、自定义 `User-Agent` 及 `自动 / 仅经代理 / 仅直连` 拉取通道。
   - **规则命中诊断、出口 IP 检测与切网自愈**：监控弹窗内置 **诊断** 分页，可模拟测试任意域名/IP 命中的规则与最终出站链路、检测公网出口 IP、清理 DNS 与 FakeIP 缓存；开启 Allow LAN 自动展示并可 1 键复制局域网共享地址；Wi-Fi ↔ 5G 切换自动清理旧连接；支持中英实时切换与桌面 **App Shortcuts** 快捷入口。
   - 热切换配置文件、切换服务器节点（如韩国 → 美国）或切换路由模式时，自动 **断开先前所有活跃连接**，确保长连接与 UDP/QUIC 会话立即切换无残留。
   - 支持剪贴板智能识别、本地文件导入、内置 YAML 编辑器与内核级校验、全部订阅批量更新与 `.zip` 备份导出。
   - 支持 **规则 / 全局 / 直连** 实时切换：首次使用全局模式优先选择 `PROXY` 策略组，已手动选择的有效节点按配置保留。支持 **允许局域网共享（Allow LAN）**、**IPv6 双栈**、**分应用代理（黑白名单 + 应用图标搜索）**、**DNS 劫持与系统物理 DNS 自动跟踪**、**Sniffer 流量嗅探**、**FakeIP** 与外部 **Proxy/Rule Providers**。
+  - 设置中的「遵循配置的内核选项」可保留订阅里的嗅探、延迟、并发、GeoData 和进程匹配设置；路由模式、IPv6、TUN 和显式自定义覆写仍由应用管理。
 - **可视化规则编辑与实时连接快捷加规则**：
   - 内置可视化**分流规则编辑器**：支持 `DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`DOMAIN-REGEX`、`IP-CIDR`、`IP-CIDR6`、`SRC-IP-CIDR`、`GEOIP`、`GEOSITE`、`IP-ASN`、`DST-PORT`、`SRC-PORT`、`NETWORK`、`PROCESS-NAME`、`PROCESS-PATH`、`RULE-SET` 以及原始 `AND/OR/SUB-RULE/MATCH` 表达式；支持 `no-resolve`、`前置最高优先` / `兜底规则之前` 优先级调节、单条开关、上下移动与保存即热重载。
   - 支持查看运行中核心的全部生效规则；在**实时连接监控**中点击任意连接即可 1 键生成直连/代理/拦截规则。
@@ -117,7 +118,7 @@ adb shell am start -n com.neko233.vpn233/.MainActivity --ez open_rules true
 
 ```bash
 cd go-core
-CGO_ENABLED=0 go test -v -tags "cmfa,with_gvisor,with_low_memory,no_easytier,no_tailscale,no_zerotier,no_fake_tcp" ./...
+CGO_ENABLED=0 go test -v -tags "cmfa,with_gvisor,with_low_memory" ./...
 ```
 
 编译 `arm64-v8a` 核心库：

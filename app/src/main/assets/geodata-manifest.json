@@ -1,0 +1,10 @@
+{
+  "source": "https://github.com/MetaCubeX/meta-rules-dat/releases/tag/latest",
+  "snapshot": "2026-11-26",
+  "files": {
+    "GeoIP.dat": "d4ec4c5e5d5a38c1399964ea9fd8c94288426a3b31b483904b67819fc07f4466",
+    "geoip.metadb": "ecf438eee5c54d91e32887f900d47fbad39f86666506fbc20e44afb7320e5007",
+    "geosite.dat": "de5bdc1f196e68cd1fad180becb593a0d3cdd41c372de7742dfacd0b1c8b5230",
+    "ASN.mmdb": "ba7c4964c71b51d28dc23eefd5e4376801bf90472d26f766648aae003af9388e"
+  }
+}

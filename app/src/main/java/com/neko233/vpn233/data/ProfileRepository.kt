@@ -3,6 +3,7 @@ package com.neko233.vpn233.data
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.neko233.vpn233.BuildConfig
 import com.neko233.vpn233.core.MihomoBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -758,8 +759,7 @@ class ProfileRepository(private val context: Context) {
             val existing = existingId?.let { eid -> profiles.value.firstOrNull { it.id == eid } }
                 ?: storage.findByUrl(trimmedUrl)
             val updateMode = existing?.updateMode ?: ProfileUpdateMode.AUTO
-            val ua = existing?.customUserAgent?.takeIf { it.isNotBlank() }
-                ?: "vpn233/1.2 clash-verge/2.2 mihomo/1.19"
+            val ua = SubscriptionUserAgent.select(existing?.customUserAgent, BuildConfig.MIHOMO_VERSION, BuildConfig.VERSION_NAME)
 
             val conn = openUrlWithRoutingPolicy(trimmedUrl, ua, updateMode, runningProxyPort)
             val code = conn.responseCode

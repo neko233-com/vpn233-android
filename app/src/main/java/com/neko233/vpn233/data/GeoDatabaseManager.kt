@@ -15,35 +15,25 @@ class GeoDatabaseManager(private val context: Context) {
     val homeDir = File(context.filesDir, "mihomo").apply { mkdirs() }
 
     private val geoIpFile get() = File(homeDir, "geoip.metadb")
+    private val geoIpDatFile get() = File(homeDir, "GeoIP.dat")
     private val geoSiteFile get() = File(homeDir, "GeoSite.dat")
     private val asnFile get() = File(homeDir, "ASN.mmdb")
 
     fun ensureBootstrapAssets() {
-        copyAssetIfMissing("geoip.metadb", geoIpFile)
-        copyAssetIfMissing("geosite.dat", geoSiteFile)
+        copyBundledAsset("geoip.metadb", geoIpFile, "c17f1d162bf3da8aa881dd6c0665b2179ea9a83e6a4af0257190dfcabd037233", 407_997L)
+        copyBundledAsset("geosite.dat", geoSiteFile, "b8c5706889a8ad4a48662e84b14a4d35abf0b10de47c85c94febfad841150af5", 176_649L)
+        copyBundledAsset("GeoIP.dat", geoIpDatFile)
+        copyBundledAsset("ASN.mmdb", asnFile)
     }
 
-    private fun copyAssetIfMissing(assetName: String, dest: File) {
-        if (dest.exists() && dest.length() > 1024L) return
-        val tmp = File(homeDir, "$assetName.tmp")
-        runCatching {
-            context.assets.open(assetName).use { input ->
-                tmp.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-            if (tmp.length() > 1024L) {
-                tmp.renameTo(dest)
-            } else {
-                tmp.delete()
-            }
-        }
-    }
+    private fun copyBundledAsset(assetName: String, dest: File, legacySha256: String? = null, legacySize: Long? = null) =
+        GeoBootstrapInstaller.install(dest, legacySha256, legacySize) { context.assets.open(assetName) }
 
     fun getStatus(): GeoDbStatus = GeoDbStatus(
         geoIpBytes = if (geoIpFile.exists()) geoIpFile.length() else 0L,
         geoSiteBytes = if (geoSiteFile.exists()) geoSiteFile.length() else 0L,
-        asnBytes = if (asnFile.exists()) asnFile.length() else 0L
+        asnBytes = if (asnFile.exists()) asnFile.length() else 0L,
+        geoIpDatBytes = if (geoIpDatFile.exists()) geoIpDatFile.length() else 0L
     )
 
     suspend fun upgradeToFullDatabases(proxyPort: Int = 0, onStep: (String) -> Unit): Result<GeoDbStatus> =
@@ -56,6 +46,15 @@ class GeoDatabaseManager(private val context: Context) {
                         "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
                     ),
                     geoIpFile,
+                    proxyPort
+                )
+                onStep("正在下载 GeoIP.dat...")
+                downloadWithFallback(
+                    listOf(
+                        "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat",
+                        "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat"
+                    ),
+                    geoIpDatFile,
                     proxyPort
                 )
                 onStep("正在下载完整版 GeoSite.dat...")
@@ -80,8 +79,9 @@ class GeoDatabaseManager(private val context: Context) {
             }
         }
 
-    fun resetToLiteDatabases(): GeoDbStatus {
+    fun resetToBundledDatabases(): GeoDbStatus {
         geoIpFile.delete()
+        geoIpDatFile.delete()
         geoSiteFile.delete()
         asnFile.delete()
         ensureBootstrapAssets()
