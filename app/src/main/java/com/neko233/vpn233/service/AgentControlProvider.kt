@@ -227,6 +227,7 @@ class AgentControlProvider : ContentProvider() {
         val s = app.settingsStore.settings.value
         return okBundle(JSONObject().apply {
             put("vpnStatus", Vpn233Service.status.value.name)
+            put("restoreAfterUpdate", VpnRunState.lastRunning(app) ?: JSONObject.NULL)
             put("activeProfileId", active?.id ?: "")
             put("activeProfileName", active?.name ?: "")
             put("currentNode", Vpn233Service.currentNodeName.value)

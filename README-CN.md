@@ -13,6 +13,7 @@
   - **息屏感知休眠**：监听系统亮灭屏（`ACTION_SCREEN_OFF` / `ACTION_SCREEN_ON`），息屏或划掉后台卡片（`onTaskRemoved`）后自动停止 JNI 速率轮询与通知栏高频 Binder 刷新，并将核心日志自动降级为 `WARNING`、释放空闲堆内存。
   - **极致低开销默认策略**：TUN 默认 `MTU 9000`、`UDPTimeout 60s`、`Mixed` 栈（TCP 走内核 System 栈、UDP 走 gVisor），且默认关闭每连接进程 UID 查询（`find-process-mode: off`），大幅减少 Binder IPC 损耗。
   - **完善保活能力**：支持首页/设置页一键申请忽略电池优化（`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`）、系统下拉快捷开关瓷贴（`Vpn233TileService`）与开机自动连接（`Vpn233BootReceiver`）。
+  - 覆盖更新时尝试恢复更新前正在运行的 VPN；手动断开的 VPN 保持断开。实际恢复受系统后台启动限制与 VPN 授权影响。
 - **完整功能 `arm64-v8a` 内核与 Geo 数据**：
   - `libmihomo.so` 使用 `cmfa,with_gvisor,with_low_memory` 构建，不关闭 EasyTier、Tailscale、ZeroTier 或 FakeTCP；具体协议仍依赖 Android 权限、系统能力和服务端支持。
   - 开启 R8 全量混淆与资源收缩、语言资源仅保留 `zh`/`en`、自定义精简矢量图标（零 `material-icons-extended` 臃肿依赖）。
@@ -132,5 +133,7 @@ CGO_ENABLED=0 go test -v -tags "cmfa,with_gvisor,with_low_memory" ./...
 ```
 
 Release APK 输出路径：`app/build/outputs/apk/release/app-release.apk`
+
+Windows 开发机可运行 `./scripts/install-release.ps1 -Serial <设备序列号>` 覆盖安装正式包，并自动恢复安装前的 VPN 连接状态。也可用 `-Apk <路径>` 指定发布包。设备需已授权 ADB 和 VPN；部分厂商系统仍可能要求确认安装或阻止后台恢复，脚本不会关闭系统安全功能。
 
 正式签名需要本机的 `keystore.properties` 和对应密钥库；这些文件不纳入 Git。未配置正式密钥时，Release 构建只生成 `app-release-unsigned.apk`，不会回退到调试签名。本地单元测试和构建不能代替设备上的 VPN 连接验证。

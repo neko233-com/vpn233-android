@@ -13,6 +13,7 @@ A sleek, ultra-low-power, high-performance **arm64-v8a** Android proxy client wr
   - **Screen-aware monitoring**: when the screen turns off (`ACTION_SCREEN_OFF`) or the app is swiped from Recents, JNI traffic polling and notification binder updates halt completely, log verbosity trims down to `WARNING`, and Go releases unused heap pages cleanly.
   - **Low-overhead defaults**: `MTU 9000` jumbo TUN frames, `UDPTimeout 60s`, `Mixed` TUN stack (kernel `System` TCP + `gVisor` UDP), and `find-process-mode: off` by default to eliminate per-connection Binder IPC overhead.
   - **Background keep-alive**: 1-tap battery optimization exemption prompt (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`), Quick Settings Tile (`Vpn233TileService`), and boot auto-start (`Vpn233BootReceiver`).
+  - After an app update, an active VPN is restored when Android permits it; an explicitly disconnected VPN stays disconnected.
 - **Full-featured `arm64-v8a` core and Geo databases**:
   - `libmihomo.so` is built with `cmfa,with_gvisor,with_low_memory`; EasyTier, Tailscale, ZeroTier and FakeTCP are not disabled at build time. Protocols may still require Android permissions, OS support, and compatible servers.
   - R8 full minification, resource shrinking, `zh`/`en` locale filtering, and custom `ImageVector` icons (no `material-icons-extended` bloat).
@@ -132,5 +133,7 @@ Rebuild native shared library:
 ```
 
 Release APK output: `app/build/outputs/apk/release/app-release.apk`
+
+On Windows, `./scripts/install-release.ps1 -Serial <device-serial>` installs the release and restores the prior VPN state. Use `-Apk <path>` for another release APK. ADB and VPN authorization are required; some vendor systems may still require install confirmation or block background restoration.
 
 Production signing requires a local `keystore.properties` and its keystore, neither of which is tracked in Git. Without production signing credentials, the release build produces `app-release-unsigned.apk` instead of silently using a debug key. Local unit tests and builds do not replace an on-device VPN connection test.

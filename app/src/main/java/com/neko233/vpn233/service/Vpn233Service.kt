@@ -129,6 +129,7 @@ class Vpn233Service : VpnService() {
     }
 
     private fun enqueueLifecycle(command: LifecycleRequests.Command) {
+        if (command == LifecycleRequests.Command.STOP) VpnRunState.setRunning(this, false)
         if (!lifecycleRequests.request(command) {
                 _status.value = if (command == LifecycleRequests.Command.STOP) VpnStatus.STOPPING else VpnStatus.STARTING
             }) return
@@ -168,6 +169,7 @@ class Vpn233Service : VpnService() {
             if (lifecycleRequests.hasPendingStart()) {
                 _status.value = VpnStatus.STARTING
             } else {
+                VpnRunState.setRunning(this, false)
                 _status.value = VpnStatus.STOPPED
                 stopForegroundCompat()
                 stopSelf()
@@ -295,7 +297,10 @@ class Vpn233Service : VpnService() {
             refreshCurrentNodeName()
             // The check and status transition share the request lock so a rapid switch cannot
             // briefly report an obsolete configuration as the completed request.
-            if (!lifecycleRequests.finishLoad { _status.value = VpnStatus.RUNNING }) return
+            if (!lifecycleRequests.finishLoad {
+                    VpnRunState.setRunning(this, true)
+                    _status.value = VpnStatus.RUNNING
+                }) return
             pushStaticOrRateNotification(TrafficStats(), force = true)
             requestTileUpdate()
             ensureMonitorLoop()
@@ -367,6 +372,7 @@ class Vpn233Service : VpnService() {
         _runningProfileId.value = null
         lastNotifiedText = ""
         val restartPending = lifecycleRequests.hasPendingStart()
+        if (!restartPending) VpnRunState.setRunning(this, false)
         _status.value = if (restartPending) VpnStatus.STARTING else VpnStatus.STOPPED
         requestTileUpdate()
         if (!restartPending) {
